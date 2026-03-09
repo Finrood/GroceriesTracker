@@ -20,7 +20,7 @@ Beyond simple expense tracking, it provides deep financial intelligence, includi
 
 ## 🏗️ Technical Architecture
 
-*   **Backend:** Python 3.12+ / Django 6.0+
+*   **Backend:** Python 3.14+ / Django 6.0+
 *   **Database:** SQLite (Development/Portability) / PostgreSQL (Production)
 *   **Task Queue:** `Django-Q2` for asynchronous product enrichment and scraping.
 *   **Data Science:** `RapidFuzz` for semantic product matching and `Hypothesis` for property-based testing.
@@ -32,7 +32,7 @@ Beyond simple expense tracking, it provides deep financial intelligence, includi
 ## 🚀 Getting Started
 
 ### Prerequisites
-*   Python 3.12+
+*   Python 3.14+
 *   Docker & Docker Compose (Optional)
 
 ### Standard Setup
