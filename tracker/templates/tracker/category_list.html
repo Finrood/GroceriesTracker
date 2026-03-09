@@ -1,0 +1,95 @@
+{% extends 'tracker/layout/base.html' %}
+
+{% block title %}Manage Categories - Grocery Tracker{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 2.5rem; display: flex; justify-content: space-between; align-items: center;">
+    <div>
+        <h1 style="font-size: 2rem; font-weight: 800; color: #1e293b; margin-bottom: 0.25rem;">Categories.</h1>
+        <p style="color: var(--text-muted);">Organize your products for better inflation analysis.</p>
+    </div>
+    <button onclick="document.getElementById('addCatForm').style.display='block'" class="btn btn-primary">➕ New Category</button>
+</div>
+
+<div id="addCatForm" class="card" style="display: none; border-left: 5px solid var(--primary);">
+    <h3 class="card-title" style="margin-bottom: 1rem;">Create New Category</h3>
+    <form action="{% url 'category_create' %}" method="POST" style="display: flex; gap: 1rem;">
+        {% csrf_token %}
+        <input type="text" name="name" placeholder="Category Name (e.g. Baby, Cleaning...)" required style="flex: 1; padding: 0.75rem; border-radius: 8px; border: 1px solid var(--border);">
+        <button type="submit" class="btn btn-primary">Create</button>
+        <button type="button" onclick="this.parentElement.parentElement.style.display='none'" class="btn btn-secondary">Cancel</button>
+    </form>
+</div>
+
+<div class="card" style="padding: 0;">
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Category Name</th>
+                <th>Products Linked</th>
+                <th style="text-align: right;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for cat in categories %}
+            <tr>
+                <td>
+                    <form action="{% url 'category_update' %}" method="POST" style="display: flex; gap: 10px; align-items: center;">
+                        {% csrf_token %}
+                        <input type="hidden" name="id" value="{{ cat.id }}">
+                        <input type="text" name="name" value="{{ cat.name }}" style="padding: 5px 10px; border: 1px solid transparent; border-radius: 4px; font-weight: 700; background: transparent;" onfocus="this.style.border='1px solid var(--border)'; this.style.background='white';">
+                        <button type="submit" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.7rem;">Rename</button>
+                    </form>
+                </td>
+                <td>
+                    <span class="badge badge-info">{{ cat.product_count }} products</span>
+                    {% if cat.product_count > 0 %}
+                        <button onclick="toggleItems('cat-{{ cat.id }}')" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.7rem; margin-left: 10px;">🔍 View Items</button>
+                    {% endif %}
+                </td>
+                <td style="text-align: right;">
+                    {% if cat.product_count == 0 %}
+                    <form action="{% url 'category_delete' cat.id %}" method="POST" style="display: inline;" onsubmit="return confirm('Delete this empty category?')">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-danger" style="padding: 0.5rem 0.75rem; font-size: 0.8rem;">Delete</button>
+                    </form>
+                    {% else %}
+                    <span class="badge badge-muted" title="Cannot delete: category not empty">Locked</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr id="cat-{{ cat.id }}" style="display: none; background: #f8fafc;">
+                <td colspan="3" style="padding: 1.5rem;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem;">
+                        {% for p in cat.products.all %}
+                        <div class="card" style="margin-bottom: 0; padding: 1rem; border: 1px solid var(--border); background: white;">
+                            <strong style="font-size: 0.8rem; display: block; margin-bottom: 0.5rem;">{{ p.display_name|default:p.name }}</strong>
+                            <form action="{% url 'update_product_category' %}" method="POST">
+                                {% csrf_token %}
+                                <input type="hidden" name="product_id" value="{{ p.id }}">
+                                <div style="display: flex; gap: 5px;">
+                                    <select name="category_id" style="flex: 1; font-size: 0.75rem; padding: 4px; border-radius: 4px; border: 1px solid var(--border);">
+                                        {% for option in all_categories %}
+                                            <option value="{{ option.id }}" {% if option.id == cat.id %}selected{% endif %}>{{ option.name }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    <button type="submit" class="btn btn-primary" style="padding: 2px 8px; font-size: 0.7rem;">Move</button>
+                                </div>
+                            </form>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+function toggleItems(id) {
+    const el = document.getElementById(id);
+    el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
+}
+</script>
+{% endblock %}

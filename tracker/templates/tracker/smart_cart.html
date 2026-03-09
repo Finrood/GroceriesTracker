@@ -1,0 +1,123 @@
+{% extends 'tracker/layout/base.html' %}
+
+{% block title %}Smart Cart Optimizer{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 2.5rem;">
+    <h1 style="font-size: 2rem; font-weight: 800; color: #1e293b; margin-bottom: 0.25rem;">Smart Cart.</h1>
+    <p style="color: var(--text-muted);">The most advanced basket optimization algorithm. Don't just save on items, save on the trip.</p>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 2fr; gap: 2rem; align-items: start;">
+    
+    <!-- Input Form -->
+    <div class="card">
+        <h3 class="card-title" style="margin-bottom: 1rem;">Your Shopping List</h3>
+        <form method="POST">
+            {% csrf_token %}
+            <textarea name="shopping_list" style="width: 100%; height: 300px; padding: 1rem; border: 2px solid var(--border); border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 0.9rem; margin-bottom: 1rem;" placeholder="Paste your list here (one item per line)...&#10;Milk&#10;Eggs&#10;Coca Cola&#10;Rice 5kg">{{ original_list }}</textarea>
+            <button type="submit" class="btn btn-primary" style="width: 100%; padding: 1rem;">🚀 Optimize My Trip</button>
+        </form>
+    </div>
+
+    <!-- Results Area -->
+    <div class="card" style="background: #f8fafc; border: 1px dashed var(--border);">
+        {% if result %}
+            {% if result.single_store_recommendation %}
+                <div style="background: white; border: 1px solid #10b981; border-radius: 12px; padding: 2rem; margin-bottom: 2rem; position: relative; overflow: hidden;">
+                    <div style="position: absolute; top: 0; right: 0; background: #10b981; color: white; padding: 0.5rem 1rem; font-weight: 700; border-bottom-left-radius: 12px;">Best Choice</div>
+                    <h2 style="font-size: 1.5rem; font-weight: 800; color: #1e293b; margin-bottom: 0.5rem;">Go to {{ result.single_store_recommendation.store }}</h2>
+                    <p style="color: var(--text-muted); margin-bottom: 1.5rem;">Estimated Total: <strong style="color: var(--primary); font-size: 1.25rem;">R$ {{ result.single_store_recommendation.total|floatformat:2 }}</strong></p>
+                    
+                    <h4 style="font-size: 0.9rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.5rem; text-transform: uppercase;">Cart Breakdown</h4>
+                    <ul style="list-style: none; padding: 0;">
+                        {% for item in result.single_store_recommendation.items %}
+                        <li style="display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border);">
+                            <span>
+                                <strong>{% if item.quantity > 1 %}{{ item.quantity }}x {% endif %}{{ item.product }}</strong> 
+                                <br><small style="color: var(--text-muted);">Matches: {{ item.item }}</small>
+                            </span>
+                            <span style="text-align: right;">
+                                <div style="font-weight: 600;">R$ {{ item.total|floatformat:2 }}</div>
+                                {% if item.benchmark %}
+                                    <span class="badge {{ item.benchmark.class }}" style="font-size: 0.6rem; padding: 1px 3px;">
+                                        {{ item.benchmark.icon }} {{ item.benchmark.label }}
+                                    </span><br>
+                                {% endif %}
+                                {% if item.quantity > 1 %}<small style="color: var(--text-muted); font-size: 0.7rem;">(R$ {{ item.price|floatformat:2 }} ea)</small>{% endif %}
+                            </span>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    {% if result.single_store_recommendation.missing_count > 0 %}
+                    <div style="margin-top: 1rem; padding: 1rem; background: #fee2e2; border-radius: 8px; color: #b91c1c; font-weight: 600;">
+                        ⚠️ {{ result.single_store_recommendation.missing_count }} items not found at this store.
+                    </div>
+                    {% endif %}
+                </div>
+
+                {% if result.alternatives %}
+                <h3 style="font-size: 1.1rem; font-weight: 700; color: var(--text-muted); margin-bottom: 1rem;">Alternatives</h3>
+                <div style="display: grid; gap: 1rem; margin-bottom: 2rem;">
+                    {% for alt in result.alternatives %}
+                    <div style="background: white; padding: 1rem; border-radius: 8px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong>{{ alt.store }}</strong>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">{{ alt.items|length }} items found</div>
+                        </div>
+                        <strong style="color: var(--text-main);">R$ {{ alt.total|floatformat:2 }}</strong>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                {% if result.split_trip_recommendation.is_worth_it %}
+                <div style="background: #eff6ff; border: 2px solid var(--secondary); border-radius: 12px; padding: 2rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                        <h2 style="font-size: 1.5rem; font-weight: 800; color: var(--secondary);">🔥 Split-Trip Optimization</h2>
+                        <span class="badge" style="background: var(--secondary); color: white; padding: 0.5rem 1rem;">Save R$ {{ result.split_trip_recommendation.savings|floatformat:2 }} extra!</span>
+                    </div>
+                    <p style="color: var(--text-muted); margin-bottom: 1.5rem;">Buying individual items at their cheapest known location reduces your total to <strong style="color: var(--secondary);">R$ {{ result.split_trip_recommendation.total|floatformat:2 }}</strong>.</p>
+                    
+                    <table class="table" style="background: white; border-radius: 8px;">
+                        <thead>
+                            <tr>
+                                <th>Product</th>
+                                <th>Store</th>
+                                <th style="text-align: right;">Price</th>
+                                <th style="text-align: center;">Confidence</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in result.split_trip_recommendation.items %}
+                            <tr>
+                                <td>{{ item.product }}<br><small style="color: var(--text-muted);">{{ item.date|date:"d M" }}</small></td>
+                                <td><span class="badge badge-info">📍 {{ item.store }}</span></td>
+                                <td style="text-align: right;"><strong>R$ {{ item.price|floatformat:2 }}</strong></td>
+                                <td style="text-align: center;">
+                                    <span class="badge {{ item.confidence.class }}" title="{{ item.date|date:'Y-m-d' }}">
+                                        {{ item.confidence.label }}
+                                    </span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+
+            {% else %}
+                <div style="text-align: center; padding: 3rem;">
+                    <h3>🤷‍♂️ No matches found.</h3>
+                    <p>Try refining your search terms or adding more receipts to the database.</p>
+                </div>
+            {% endif %}
+        {% else %}
+            <div style="text-align: center; padding: 5rem 2rem; color: var(--text-muted);">
+                <div style="font-size: 3rem; margin-bottom: 1rem;">🤖</div>
+                <p>Enter your list on the left to activate the AI optimization engine.</p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

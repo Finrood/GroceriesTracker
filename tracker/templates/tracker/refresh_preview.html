@@ -1,0 +1,86 @@
+{% extends 'tracker/layout/base.html' %}
+
+{% block title %}Preview Changes - Grocery Tracker{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 2.5rem; display: flex; justify-content: space-between; align-items: flex-end;">
+    <div>
+        <h1 style="font-size: 2.25rem; font-weight: 800; color: #1e293b; margin-top: 0.5rem; margin-bottom: 0.25rem;">Preview Changes.</h1>
+        <p style="color: var(--text-muted);">Compare existing data with the latest scrape for <strong>{{ receipt.store.name }}</strong> ({{ receipt.issue_date|date:"d/m/Y" }}).</p>
+    </div>
+</div>
+
+<div class="card" style="padding: 2rem; border-top: 6px solid var(--accent);">
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 3rem;">
+        <div style="background: #f8fafc; padding: 1.5rem; border-radius: 12px; text-align: center;">
+            <p style="text-transform: uppercase; font-size: 0.75rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.5rem;">Total Price Change</p>
+            <p style="font-size: 2.25rem; font-weight: 800; color: {% if diff.total_change > 0 %}var(--danger){% else %}var(--primary){% endif %};">
+                {% if diff.total_change > 0 %}+{% endif %}R$ {{ diff.total_change|floatformat:2 }}
+            </p>
+        </div>
+        <div style="background: #f8fafc; padding: 1.5rem; border-radius: 12px; text-align: center;">
+            <p style="text-transform: uppercase; font-size: 0.75rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.5rem;">Fiscal Updates</p>
+            <p style="font-size: 1.5rem; font-weight: 800;">
+                {% if diff.tax_change != 0 %}<span class="badge badge-info" style="font-size: 1.25rem;">Taxes Updated</span>{% else %}<span class="badge badge-muted" style="font-size: 1.25rem;">No Change</span>{% endif %}
+            </p>
+        </div>
+    </div>
+
+    {% if diff.added %}
+    <h3 class="card-title" style="margin-bottom: 1rem; color: var(--primary);">✨ New Items Found ({{ diff.added|length }})</h3>
+    <table class="table" style="margin-bottom: 2rem;">
+        {% for item in diff.added %}
+        <tr>
+            <td style="width: 70%;"><span style="color: var(--primary); font-weight: 700;">+</span> {{ item.name }}</td>
+            <td style="text-align: right; font-weight: 700;">R$ {{ item.total_price }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+
+    {% if diff.updated %}
+    <h3 class="card-title" style="margin-bottom: 1rem; color: var(--accent);">🔄 Price/Quantity Updates ({{ diff.updated|length }})</h3>
+    <table class="table" style="margin-bottom: 2rem;">
+        {% for item in diff.updated %}
+        <tr>
+            <td style="width: 60%;">{{ item.name }}</td>
+            <td style="text-align: right;">
+                <span class="badge" style="background: #fef3c7; color: #92400e;">R$ {{ item.old_total }} → R$ {{ item.new_total }}</span>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+
+    {% if diff.removed %}
+    <h3 class="card-title" style="margin-bottom: 1rem; color: var(--danger);">🗑️ Items to be Removed ({{ diff.removed|length }})</h3>
+    <table class="table" style="margin-bottom: 2rem;">
+        {% for item in diff.removed %}
+        <tr>
+            <td style="width: 70%;"><span style="color: var(--danger); font-weight: 700;">-</span> {{ item.product.name }}</td>
+            <td style="text-align: right; font-weight: 700; opacity: 0.5;">R$ {{ item.total_price }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+
+    {% if not diff.added and not diff.updated and not diff.removed %}
+    <div style="text-align: center; padding: 4rem 2rem; background: #f8fafc; border-radius: 12px; margin-bottom: 2rem;">
+        <span style="font-size: 3rem;">👌</span>
+        <h3 style="margin-top: 1rem; font-weight: 800;">No changes detected.</h3>
+        <p style="color: var(--text-muted);">The latest scrape matches your existing data perfectly.</p>
+    </div>
+    {% endif %}
+
+    <div style="display: flex; gap: 1rem; margin-top: 3rem;">
+        <a href="{% url 'receipt_detail' receipt.id %}" class="btn btn-secondary" style="flex: 1; padding: 1.25rem;">Cancel & Keep Old</a>
+        <form action="{% url 'confirm_refresh' %}" method="POST" style="flex: 2; display: flex;">
+            {% csrf_token %}
+            <input type="hidden" name="url" value="{% if is_duplicate %}{{ new_url }}{% else %}{{ receipt.url }}{% endif %}">
+            <button type="submit" class="btn btn-primary" style="width: 100%; padding: 1.25rem; font-size: 1.125rem;">
+                Replace with New Intelligence ✅
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

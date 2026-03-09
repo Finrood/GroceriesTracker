@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Grocery Tracker{% endblock %}</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛒</text></svg>">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #10b981;
+            --primary-dark: #059669;
+            --secondary: #6366f1;
+            --accent: #f59e0b;
+            --danger: #ef4444;
+            --bg-body: #f8fafc;
+            --bg-card: #ffffff;
+            --text-main: #1e293b;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background: var(--bg-body); 
+            color: var(--text-main);
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Sidebar Navigation */
+        .sidebar {
+            width: 260px;
+            background: #1e293b;
+            color: white;
+            padding: 2rem 1.5rem;
+            position: fixed;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        .sidebar-brand {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-decoration: none;
+        }
+
+        .nav-list { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
+        .nav-item a {
+            color: #94a3b8;
+            text-decoration: none;
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            font-weight: 500;
+            transition: 0.2s;
+        }
+        .nav-item a:hover, .nav-item a.active {
+            background: #334155;
+            color: white;
+        }
+        .nav-item a.active { color: var(--primary); }
+
+        /* Main Content */
+        .main-content {
+            margin-left: 260px;
+            flex: 1;
+            padding: 2.5rem;
+            width: calc(100% - 260px);
+        }
+
+        .container-lg { max-width: 1200px; margin: 0 auto; }
+
+        /* Global Components */
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border);
+            margin-bottom: 2rem;
+        }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+        .card-title { font-size: 1.1rem; font-weight: 700; color: var(--text-main); }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.625rem 1.25rem;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.2s;
+            text-decoration: none;
+            border: none;
+            gap: 0.5rem;
+            font-size: 0.9375rem;
+        }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: var(--primary-dark); transform: translateY(-1px); }
+        .btn-secondary { background: white; color: var(--text-main); border: 1px solid var(--border); }
+        .btn-secondary:hover { background: #f1f5f9; }
+        .btn-danger { background: #fee2e2; color: var(--danger); }
+        .btn-danger:hover { background: #fecaca; }
+
+        .table { width: 100%; border-collapse: collapse; }
+        .table th {
+            text-align: left;
+            padding: 1rem;
+            background: #f8fafc;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 700;
+            border-bottom: 2px solid var(--border);
+        }
+        .table td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+        .table tr:last-child td { border-bottom: none; }
+
+        .badge {
+            padding: 0.25rem 0.625rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            display: inline-block;
+        }
+        .badge-success { background: #dcfce7; color: #166534; }
+        .badge-info { background: #e0f2fe; color: #075985; }
+        .badge-muted { background: #f1f5f9; color: #475569; }
+
+        .messages { margin-bottom: 1.5rem; list-style: none; }
+        .message { padding: 1rem; border-radius: 8px; margin-bottom: 0.5rem; font-weight: 500; }
+        .message-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .message-error { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+
+        @media (max-width: 1024px) {
+            .sidebar { width: 70px; padding: 2rem 0.25rem; align-items: center; }
+            .sidebar-brand span:last-child, .nav-item span:last-child { display: none; }
+            .nav-item a { justify-content: center; padding: 0.75rem 0; width: 50px; }
+            .main-content { margin-left: 70px; width: calc(100% - 70px); padding: 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="sidebar">
+        <a href="{% url 'index' %}" class="sidebar-brand">
+            <span>🛒</span> <span>Tracker.</span>
+        </a>
+        <ul class="nav-list">
+            <li class="nav-item">
+                <a href="{% url 'index' %}" class="{% if request.resolver_match.url_name == 'index' %}active{% endif %}" title="Add New Receipt">
+                    <span>➕</span> <span>Add Receipt</span>
+                </a>
+            </li>
+            <li class="nav-item">
+                <a href="{% url 'dashboard' %}" class="{% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" title="View Dashboard">
+                    <span>📊</span> <span>Dashboard</span>
+                </a>
+            </li>
+            <li class="nav-item">
+                <a href="{% url 'analytics_dashboard' %}" class="{% if request.resolver_match.url_name == 'analytics_dashboard' %}active{% endif %}" title="Advanced Analytics">
+                    <span>🧠</span> <span>Intelligence</span>
+                </a>
+            </li>
+            <li class="nav-item">
+                <a href="{% url 'smart_cart' %}" class="{% if request.resolver_match.url_name == 'smart_cart' %}active{% endif %}" title="Smart Cart AI">
+                    <span>🛒</span> <span>Smart Cart</span>
+                </a>
+            </li>
+            <li class="nav-item">
+                <a href="{% url 'receipt_list' %}" class="{% if request.resolver_match.url_name == 'receipt_list' or request.resolver_match.url_name == 'receipt_detail' %}active{% endif %}" title="Purchase History">
+                    <span>🧾</span> <span>History</span>
+                </a>
+            </li>
+            <li class="nav-item">
+                <a href="{% url 'category_list' %}" class="{% if request.resolver_match.url_name == 'category_list' %}active{% endif %}" title="Manage Categories">
+                    <span>📁</span> <span>Categories</span>
+                </a>
+            </li>
+
+            {% if user.is_staff %}
+            <li class="nav-item">
+                <a href="{% url 'system_maintenance' %}" class="{% if request.resolver_match.url_name == 'system_maintenance' %}active{% endif %}" title="System Maintenance">
+                    <span>🛠️</span> <span>Maintenance</span>
+                </a>
+            </li>
+            {% endif %}
+
+            {% if user.is_staff and all_users %}
+            <li class="nav-item" style="margin-top: 1.5rem; border-top: 1px solid #334155; padding-top: 1rem;">
+                <p style="font-size: 0.7rem; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 0.75rem; padding: 0 1rem;">Admin: User Filter</p>
+                <form method="GET" id="adminUserFilter" style="padding: 0 1rem;">
+                    <!-- Preserve existing q and sort params -->
+                    {% for key, value in request.GET.items %}
+                        {% if key != 'user_ids' and key != 'page' %}
+                            <input type="hidden" name="{{ key }}" value="{{ value }}">
+                        {% endif %}
+                    {% endfor %}
+                    <select name="user_ids" multiple style="width: 100%; background: #334155; color: white; border: 1px solid #475569; border-radius: 6px; padding: 5px; font-size: 0.8rem; min-height: 100px;" onchange="this.form.submit()">
+                        <option value="" {% if not selected_user_ids %}selected{% endif %}>--- All Users ---</option>
+                        {% for u in all_users %}
+                            <option value="{{ u.id }}" {% if u.id in selected_user_ids %}selected{% endif %}>{{ u.username }}</option>
+                        {% endfor %}
+                    </select>
+                    <small style="color: #64748b; font-size: 0.65rem; margin-top: 5px; display: block;">Hold Ctrl to multi-select</small>
+                </form>
+            </li>
+            {% endif %}
+
+            <li class="nav-item" style="margin-top: auto; border-top: 1px solid #334155; padding-top: 1rem;">
+                {% if user.is_authenticated %}
+                <form action="{% url 'logout' %}" method="post">
+                    {% csrf_token %}
+                    <button type="submit" style="background:none; border:none; color: #94a3b8; cursor: pointer; display: flex; align-items: center; gap: 1rem; font-weight: 500; font-size: 1rem; padding: 0.75rem 1rem;">
+                        <span>🚪</span> <span>Logout</span>
+                    </button>
+                </form>
+                {% else %}
+                <a href="{% url 'login' %}" title="Login">
+                    <span>🔑</span> <span>Login</span>
+                </a>
+                {% endif %}
+            </li>
+        </ul>
+    </nav>
+
+    <main class="main-content">
+        <div class="container-lg">
+            {% if messages %}
+                <ul class="messages">
+                    {% for message in messages %}
+                        <li class="message message-{{ message.tags }}">{{ message }}</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+</body>
+</html>

@@ -1,0 +1,130 @@
+{% extends 'tracker/layout/base.html' %}
+
+{% block title %}History - Grocery Tracker{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 2.5rem;">
+    <h1 style="font-size: 2rem; font-weight: 800; color: #1e293b; margin-bottom: 0.25rem;">Purchase History.</h1>
+    <p style="color: var(--text-muted);">Manage and audit all your past transactions.</p>
+</div>
+
+<!-- Advanced Filter Bar -->
+<div class="card" style="padding: 1.25rem; margin-bottom: 2rem; background: #f8fafc; border: 1px solid var(--border);">
+    <form method="GET" style="display: grid; grid-template-columns: 2fr 1.5fr 1.5fr 1fr auto; gap: 1rem; align-items: end;">
+        <div>
+            <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Search</label>
+            <input type="text" name="q" value="{{ current_query }}" placeholder="Store, Key, or NF#" style="width: 100%; padding: 0.625rem; border-radius: 8px; border: 1px solid var(--border);">
+        </div>
+        <div>
+            <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Store</label>
+            <select name="store" style="width: 100%; padding: 0.625rem; border-radius: 8px; border: 1px solid var(--border);">
+                <option value="">All Stores</option>
+                {% for store in stores %}
+                <option value="{{ store.id }}" {% if current_store == store.id|stringformat:"s" %}selected{% endif %}>{{ store.name|truncatechars:25 }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Sort By</label>
+            <select name="sort" style="width: 100%; padding: 0.625rem; border-radius: 8px; border: 1px solid var(--border);">
+                <option value="-issue_date" {% if current_sort == "-issue_date" %}selected{% endif %}>Purchase Date (Newest)</option>
+                <option value="issue_date" {% if current_sort == "issue_date" %}selected{% endif %}>Purchase Date (Oldest)</option>
+                <option value="-total_amount" {% if current_sort == "-total_amount" %}selected{% endif %}>Highest Amount</option>
+                <option value="-created_at" {% if current_sort == "-created_at" %}selected{% endif %}>Recently Added</option>
+            </select>
+        </div>
+        <button type="submit" class="btn btn-primary" style="padding: 0.625rem 1.5rem;">Filter</button>
+        <a href="{% url 'receipt_list' %}" class="btn btn-secondary" style="padding: 0.625rem;">Clear</a>
+    </form>
+</div>
+
+<div class="card" style="padding: 0;">
+    <div style="padding: 1.25rem 1.5rem; background: #fafafa; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+        <p style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;">Total Transactions: {{ page_obj.paginator.count }}</p>
+        <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</div>
+    </div>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Store</th>
+                <th>Preview</th>
+                <th style="text-align: right;">Amount</th>
+                <th style="text-align: center;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for receipt in page_obj %}
+            <tr>
+                <td>
+                    <span style="font-weight: 700; color: var(--text-main);">{{ receipt.issue_date|date:"d/m/Y" }}</span><br>
+                    <small style="color: var(--text-muted);">{{ receipt.issue_date|date:"H:i" }}</small>
+                </td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                        {% if receipt.store.chain.logo_url %}
+                            <img src="{{ receipt.store.chain.logo_url }}" style="width: 24px; height: 24px; object-fit: contain;">
+                        {% endif %}
+                        <div>
+                            <strong style="color: var(--text-main); font-size: 0.9rem;">{{ receipt.store.name|truncatechars:35 }}</strong><br>
+                            <span class="badge badge-muted" style="font-size: 0.65rem;">{{ receipt.items_count }} items</span>
+                        </div>
+                    </div>
+                </td>
+                <td>
+                    <div style="display: flex; gap: 4px; overflow: hidden; max-width: 200px;">
+                        {% for item in receipt.items.all|slice:":5" %}
+                            {% if item.product.local_image %}
+                                <img src="{{ item.product.local_image.url }}" title="{{ item.product.display_name|default:item.product.name }}" style="width: 32px; height: 32px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border);">
+                            {% else %}
+                                <div title="{{ item.product.display_name|default:item.product.name }}" style="width: 32px; height: 32px; background: #f1f5f9; border-radius: 4px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 0.8rem;">📦</div>
+                            {% endif %}
+                        {% endfor %}
+                        {% if receipt.items_count > 5 %}
+                            <div style="width: 32px; height: 32px; background: var(--bg-body); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 0.65rem; font-weight: 700; color: var(--text-muted);">+{{ receipt.items_count|add:"-5" }}</div>
+                        {% endif %}
+                    </div>
+                </td>
+                <td style="text-align: right;">
+                    <span class="badge badge-success" style="font-size: 0.9rem; padding: 0.4rem 0.75rem;">R$ {{ receipt.paid_amount|floatformat:2 }}</span>
+                </td>
+                <td style="text-align: center;">
+                    <div style="display: flex; gap: 0.5rem; justify-content: center;">
+                        <a href="{% url 'receipt_detail' receipt.id %}" class="btn btn-secondary" style="padding: 0.4rem 0.75rem; font-size: 0.75rem;">View</a>
+                    </div>
+                </td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="5" style="text-align: center; padding: 4rem;">
+                    <p style="color: var(--text-muted);">No matching receipts found.</p>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Pagination Controls -->
+{% if page_obj.has_other_pages %}
+<div style="margin-top: 2rem; display: flex; justify-content: center; gap: 0.5rem;">
+    {% if page_obj.has_previous %}
+        <a href="?page=1&q={{ current_query }}&store={{ current_store }}&sort={{ current_sort }}" class="btn btn-secondary">&laquo; First</a>
+        <a href="?page={{ page_obj.previous_page_number }}&q={{ current_query }}&store={{ current_store }}&sort={{ current_sort }}" class="btn btn-secondary">Prev</a>
+    {% endif %}
+
+    {% for num in page_obj.paginator.page_range %}
+        {% if page_obj.number == num %}
+            <span class="btn btn-primary" style="cursor: default;">{{ num }}</span>
+        {% elif num > page_obj.number|add:'-3' and num < page_obj.number|add:'3' %}
+            <a href="?page={{ num }}&q={{ current_query }}&store={{ current_store }}&sort={{ current_sort }}" class="btn btn-secondary">{{ num }}</a>
+        {% endif %}
+    {% endfor %}
+
+    {% if page_obj.has_next %}
+        <a href="?page={{ page_obj.next_page_number }}&q={{ current_query }}&store={{ current_store }}&sort={{ current_sort }}" class="btn btn-secondary">Next</a>
+        <a href="?page={{ page_obj.paginator.num_pages }}&q={{ current_query }}&store={{ current_store }}&sort={{ current_sort }}" class="btn btn-secondary">Last &raquo;</a>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

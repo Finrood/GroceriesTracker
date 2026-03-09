@@ -1,0 +1,494 @@
+{% extends 'tracker/layout/base.html' %}
+
+{% block title %}Market Intelligence Dashboard{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 2.5rem;">
+    <h1 style="font-size: 2rem; font-weight: 800; color: #1e293b; margin-bottom: 0.25rem;">Market Intelligence.</h1>
+    <p style="color: var(--text-muted);">Advanced inflation tracking, store competitiveness, and volatility analysis.</p>
+</div>
+
+<!-- Row 0: Budget Forecast -->
+<div id="forecastWidget" style="display: none; background: #f8fafc; border-left: 5px solid var(--secondary); padding: 1.5rem; margin-bottom: 2rem; border-radius: 8px;">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+            <h3 style="margin: 0; color: var(--text-main); font-size: 1.1rem;">🔮 Monthly Projection</h3>
+            <p style="margin: 0.5rem 0 0; color: var(--text-muted); font-size: 0.9rem;">
+                Based on your current burn rate of <strong id="burnRate"></strong>/day.
+            </p>
+        </div>
+        <div style="text-align: right;">
+            <div style="font-size: 0.8rem; text-transform: uppercase; font-weight: 700; color: var(--text-muted);">Forecasted Total</div>
+            <div style="font-size: 2rem; font-weight: 800; color: var(--secondary);" id="projectedTotal">R$ 0.00</div>
+        </div>
+    </div>
+</div>
+
+<!-- Row 1: Geospatial/Heatmap & Volatility -->
+<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 2rem; margin-bottom: 2rem;">
+    <div class="card">
+        <h3 class="card-title">⚖️ Store Price Index (Market Competitiveness)</h3>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+            Shows how much more or less (%) each store charges compared to the <strong>market average</strong> for the same products. 
+            <span style="color: var(--primary); font-weight: 700;">Green (Negative)</span> means savings; 
+            <span style="color: var(--danger); font-weight: 700;">Red (Positive)</span> means overpriced.
+        </p>
+        <div id="heatmapChart" style="height: 400px;"></div>
+    </div>
+    <div class="card">
+        <h3 class="card-title">💎 Competitiveness Radar</h3>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+            Compares store performance by category. A larger "shape" indicates higher prices in those specific departments. Use this to pick where to buy Meat vs. Pantry items.
+        </p>
+        <div id="radarChart" style="height: 400px;"></div>
+    </div>
+</div>
+
+<!-- Row 2: Pareto & Shrinkflation -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 3rem;">
+    <div class="card" style="margin-bottom: 0;">
+        <h3 class="card-title">📊 Pareto Analysis (80/20 Rule)</h3>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+            <strong>Class A Items:</strong> These products account for 80% of your total spending. Focusing your deal-hunting efforts <em>only</em> on these items will yield the highest financial return.
+        </p>
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem;">
+            <div id="paretoChart" style="height: 300px;"></div>
+            <div id="abcPieChart" style="height: 300px;"></div>
+        </div>
+
+        <!-- Inventory Lists -->
+        <div style="margin-top: 1.5rem; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">
+            <button onclick="toggleParetoList('listA')" class="btn btn-secondary" style="font-size: 0.75rem; background: #fff7ed; border-color: #f59e0b;">📦 View Class A (<span id="countA">0</span>)</button>
+            <button onclick="toggleParetoList('listB')" class="btn btn-secondary" style="font-size: 0.75rem; background: #f5f3ff; border-color: #6366f1;">📦 View Class B (<span id="countB">0</span>)</button>
+            <button onclick="toggleParetoList('listC')" class="btn btn-secondary" style="font-size: 0.75rem; background: #f8fafc; border-color: #94a3b8;">📦 View Class C (<span id="countC">0</span>)</button>
+        </div>
+
+        <div id="listA" class="pareto-list" style="display:none; margin-top: 1rem; max-height: 400px; overflow-y: auto; border: 1px solid #f59e0b; border-radius: 8px; padding: 1rem; background: white;"></div>
+        <div id="listB" class="pareto-list" style="display:none; margin-top: 1rem; max-height: 400px; overflow-y: auto; border: 1px solid #6366f1; border-radius: 8px; padding: 1rem; background: white;"></div>
+        <div id="listC" class="pareto-list" style="display:none; margin-top: 1rem; max-height: 400px; overflow-y: auto; border: 1px solid #94a3b8; border-radius: 8px; padding: 1rem; background: white;"></div>
+    </div>
+    
+    <div class="card" style="margin-bottom: 0;">
+        <h3 class="card-title">📉 Shrinkflation Report</h3>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+            Identifies products where the manufacturer reduced the volume (g/ml) over time. The <strong>Hike</strong> percentage shows the real unit-price increase caused by the smaller size.
+        </p>
+        
+        <div id="suggestionsArea" style="display:none; margin-bottom: 1.5rem; border: 1px solid #bae6fd; background: #f0f9ff; padding: 1rem; border-radius: 8px;">
+            <h4 style="font-size: 0.8rem; color: #0369a1; margin-bottom: 0.5rem;">🧠 AI Variant Suggestions</h4>
+            <div id="suggestionList"></div>
+        </div>
+
+        <div id="shrinkReport" style="max-height: 300px; overflow-y: auto;">
+            <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+                Analyzing variant deltas...
+            </div>
+        </div>
+    </div>
+    
+    <div class="card" style="margin-bottom: 0;">
+        <h3 class="card-title">📉 Basket Price Drift</h3>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+            Cost change for your 10 most common items compared to the previous trip at each store.
+        </p>
+        <div id="driftContainer" style="display: flex; flex-direction: column; gap: 0.75rem;">
+            <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+                Analyzing store trends...
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Row 3: Health & Wellness -->
+<div style="margin-bottom: 3rem;">
+    <h3 class="card-title" style="margin-bottom: 1.5rem;">🧘 Health & Wellness Dashboard</h3>
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2rem;">
+        <div class="card" style="margin-bottom: 0;">
+            <h4 style="font-size: 0.9rem; font-weight: 700; color: var(--text-muted); margin-bottom: 1rem; text-transform: uppercase;">Processing Level (NOVA)</h4>
+            <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">
+                Classification of food processing. <strong>Group 4</strong> is ultra-processed. Aim for more Group 1 & 2.
+            </p>
+            <div id="novaChart" style="height: 250px;"></div>
+        </div>
+        <div class="card" style="margin-bottom: 0;">
+            <h4 style="font-size: 0.9rem; font-weight: 700; color: var(--text-muted); margin-bottom: 1rem; text-transform: uppercase;">Pantry Nutritional Density</h4>
+            <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">
+                Average grams of Sugar, Salt, and Fat per 100g across your entire purchased inventory.
+            </p>
+            <div id="nutrientChart" style="height: 250px;"></div>
+        </div>
+        <div class="card" style="margin-bottom: 0;">
+            <h4 style="font-size: 0.9rem; font-weight: 700; color: var(--text-muted); margin-bottom: 1rem; text-transform: uppercase;">Environmental Impact</h4>
+            <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">
+                Distribution of Eco-Score grades. From <strong>A (Low impact)</strong> to <strong>E (High impact)</strong>.
+            </p>
+            <div id="ecoChart" style="height: 250px;"></div>
+        </div>
+    </div>
+    
+    <!-- Drill-down Explorer -->
+    <div id="healthExplorer" class="card" style="display: none; margin-top: 2rem; border-top: 5px solid var(--primary); background: #fdfdfd;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+            <h3 id="explorerTitle" style="margin: 0; font-size: 1.1rem; color: #1e293b;">🕵️ Category Explorer</h3>
+            <button onclick="document.getElementById('healthExplorer').style.display='none'" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.7rem;">Close</button>
+        </div>
+        <div id="explorerList" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 1rem;">
+            <!-- Items populated by JS -->
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+<script>
+    // --- Heatmap Initialization ---
+    const heatmapChart = echarts.init(document.getElementById('heatmapChart'));
+    heatmapChart.showLoading();
+    
+    fetch('{% url "api_chart_data" %}?type=heatmap')
+        .then(response => response.json())
+        .then(res => {
+            heatmapChart.hideLoading();
+            const data = res.data;
+            if (!data || data.length === 0) {
+                document.getElementById('heatmapChart').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">No volatility data for the last 30 days.</div>';
+                return;
+            }
+            renderBarChart(data);
+        });
+
+    function renderBarChart(data) {
+        heatmapChart.setOption({
+            tooltip: { 
+                trigger: 'axis', 
+                axisPointer: { type: 'shadow' },
+                formatter: function(params) {
+                    const item = data[params[0].dataIndex];
+                    return `<strong>${item.name}</strong><br>Price Index: ${item.value}%<br><small>GPS: ${item.lat}, ${item.lon}</small>`;
+                }
+            },
+            grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+            xAxis: { 
+                type: 'value', 
+                name: '% vs Average',
+                axisLabel: { formatter: '{value}%' }
+            },
+            yAxis: { type: 'category', data: data.map(i => i.name) },
+            series: [{
+                name: 'Price Index',
+                type: 'bar',
+                data: data.map(i => ({ 
+                    value: i.value, 
+                    itemStyle: { color: i.value > 0 ? '#ef4444' : '#10b981' } 
+                })),
+                label: { 
+                    show: true, 
+                    position: 'right',
+                    formatter: '{c}%'
+                }
+            }]
+        });
+    }
+
+    // --- Radar Initialization ---
+    const radarChart = echarts.init(document.getElementById('radarChart'));
+    radarChart.showLoading();
+
+    fetch('{% url "api_chart_data" %}?type=radar')
+        .then(response => response.json())
+        .then(res => {
+            radarChart.hideLoading();
+            if (!res.indicators || res.indicators.length === 0) {
+                document.getElementById('radarChart').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Insufficient category data.</div>';
+                return;
+            }
+            
+            const seriesData = res.stores.map(store => {
+                return {
+                    name: store,
+                    value: res.indicators.map(ind => res.data[ind.name][store] || 0)
+                };
+            });
+
+            radarChart.setOption({
+                tooltip: { trigger: 'item' },
+                legend: { data: res.stores, bottom: 0, icon: 'circle' },
+                radar: {
+                    indicator: res.indicators,
+                    radius: '60%',
+                    center: ['50%', '45%'],
+                    axisName: { color: '#64748b', fontWeight: '700' },
+                    splitArea: { show: false },
+                    splitLine: { lineStyle: { color: '#e2e8f0' } }
+                },
+                series: [{
+                    name: 'Store Comparison',
+                    type: 'radar',
+                    data: seriesData,
+                    symbol: 'none',
+                    lineStyle: { width: 3 },
+                    areaStyle: { opacity: 0.1 }
+                }]
+            });
+        });
+
+    window.addEventListener('resize', () => {
+        heatmapChart.resize();
+        radarChart.resize();
+        paretoChart.resize();
+        abcPieChart.resize();
+    });
+
+    // --- Forecast Logic ---
+    fetch('{% url "api_chart_data" %}?type=forecast')
+        .then(response => response.json())
+        .then(res => {
+            if (res.projected) {
+                document.getElementById('forecastWidget').style.display = 'block';
+                document.getElementById('burnRate').innerText = 'R$ ' + res.burn_rate;
+                document.getElementById('projectedTotal').innerText = 'R$ ' + res.projected;
+            }
+        });
+
+    // --- Pareto Initialization ---
+    const paretoChart = echarts.init(document.getElementById('paretoChart'));
+    const abcPieChart = echarts.init(document.getElementById('abcPieChart'));
+    paretoChart.showLoading();
+    abcPieChart.showLoading();
+
+    fetch('{% url "api_chart_data" %}?type=pareto')
+        .then(response => response.json())
+        .then(res => {
+            paretoChart.hideLoading();
+            abcPieChart.hideLoading();
+            if (res.a_items.length === 0) {
+                document.getElementById('paretoChart').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Insufficient data for Pareto Analysis.</div>';
+                return;
+            }
+
+            const xData = res.a_items.slice(0, 10).map(i => i.name.substring(0, 15) + '...');
+            const yData = res.a_items.slice(0, 10).map(i => i.spend);
+
+            paretoChart.setOption({
+                tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                xAxis: { 
+                    type: 'category', 
+                    data: xData, 
+                    axisLabel: { interval: 0, rotate: 30, fontSize: 10 } 
+                },
+                yAxis: { type: 'value', name: 'Total Spend (R$)' },
+                series: [{
+                    name: 'Total Spend',
+                    type: 'bar',
+                    data: yData,
+                    itemStyle: { color: '#f59e0b', borderRadius: [4, 4, 0, 0] },
+                    label: { show: true, position: 'top', formatter: 'R$ {@value}' }
+                }]
+            });
+
+            // ABC Distribution Pie
+            abcPieChart.setOption({
+                tooltip: { trigger: 'item', formatter: '{b}: R$ {c} ({d}%)' },
+                legend: { show: false },
+                series: [{
+                    name: 'Spending Class',
+                    type: 'pie',
+                    radius: ['40%', '70%'],
+                    label: { show: true, position: 'inner', formatter: '{b}', fontSize: 10, color: '#fff', fontWeight: 'bold' },
+                    data: [
+                        { value: res.a_spend, name: 'A', itemStyle: { color: '#f59e0b' } },
+                        { value: res.b_spend, name: 'B', itemStyle: { color: '#6366f1' } },
+                        { value: res.c_spend, name: 'C', itemStyle: { color: '#94a3b8' } }
+                    ]
+                }]
+            });
+
+            // Populate Lists
+            document.getElementById('countA').innerText = res.a_count;
+            document.getElementById('countB').innerText = res.b_count;
+            document.getElementById('countC').innerText = res.c_count;
+
+            const renderList = (id, items) => {
+                const div = document.getElementById(id);
+                if (items.length === 0) { div.innerHTML = '<em>No items in this class</em>'; return; }
+                let html = '<table class="table" style="font-size: 0.75rem;"><thead><tr><th>Product</th><th>Total Spend</th></tr></thead><tbody>';
+                items.forEach(i => {
+                    html += `<tr><td>${i.name}</td><td><strong>R$ ${i.spend.toFixed(2)}</strong></td></tr>`;
+                });
+                html += '</tbody></table>';
+                div.innerHTML = html;
+            };
+
+            renderList('listA', res.a_items);
+            renderList('listB', res.b_items);
+            renderList('listC', res.c_items);
+        });
+
+    function toggleParetoList(id) {
+        const target = document.getElementById(id);
+        const all = document.querySelectorAll('.pareto-list');
+        const isOpening = target.style.display === 'none';
+        all.forEach(l => l.style.display = 'none');
+        if (isOpening) target.style.display = 'block';
+    }
+
+    // --- Shrinkflation Logic ---
+    fetch('{% url "api_chart_data" %}?type=shrinkflation')
+        .then(response => response.json())
+        .then(res => {
+            const container = document.getElementById('shrinkReport');
+            const suggestions = document.getElementById('suggestionList');
+            
+            // 1. Handle Suggestions
+            if (res.suggestions && res.suggestions.length > 0) {
+                document.getElementById('suggestionsArea').style.display = 'block';
+                let sHtml = '';
+                res.suggestions.forEach(s => {
+                    sHtml += `<div style="font-size: 0.75rem; display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #bae6fd;">
+                        <span>Link <strong>${s.name1}</strong> to <strong>${s.name2}</strong>?</span>
+                        <form action="{% url 'link_product_variant' %}" method="POST" style="display:inline;">
+                            {% csrf_token %}
+                            <input type="hidden" name="child_id" value="${s.id1}">
+                            <input type="hidden" name="parent_id" value="${s.id2}">
+                            <button type="submit" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.65rem;">Link</button>
+                        </form>
+                    </div>`;
+                });
+                suggestions.innerHTML = sHtml;
+            }
+
+            // 2. Handle Report
+            if (!res.report || res.report.length === 0) {
+                container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted);">No shrinkflation detected in your variants yet.</div>';
+                return;
+            }
+            
+            let html = '<table class="table" style="font-size: 0.8rem;">';
+            res.report.forEach(item => {
+                const impactColor = item.cost_impact > 0 ? 'var(--danger)' : 'var(--primary)';
+                const impactText = item.cost_impact > 0 ? `+${item.cost_impact}% Hike` : `${item.cost_impact}% Saving`;
+                
+                html += `<tr>
+                    <td><strong>${item.master}</strong><br><small>${item.old_weight}g → ${item.new_weight}g</small></td>
+                    <td style="text-align:right;">
+                        <span class="badge badge-danger" style="margin-bottom:4px;">-${item.shrink_pct}% Size</span><br>
+                        <small style="color:${impactColor}; font-weight:700;">${impactText} (per unit)</small>
+                    </td>
+                </tr>`;
+            });
+            html += '</table>';
+            container.innerHTML = html;
+        });
+
+    // --- Health & Wellness Initialization ---
+    const novaChart = echarts.init(document.getElementById('novaChart'));
+    const nutrientChart = echarts.init(document.getElementById('nutrientChart'));
+    const ecoChart = echarts.init(document.getElementById('ecoChart'));
+
+    fetch('{% url "api_chart_data" %}?type=health')
+        .then(response => response.json())
+        .then(res => {
+            const showExplorer = (title, items) => {
+                const ex = document.getElementById('healthExplorer');
+                const list = document.getElementById('explorerList');
+                document.getElementById('explorerTitle').innerText = '🕵️ Products in ' + title;
+                ex.style.display = 'block';
+                list.innerHTML = items.length ? items.map(i => `<div style="background:white; padding:0.75rem; border:1px solid #e2e8f0; border-radius:8px; font-size:0.8rem; font-weight:600;">${i}</div>`).join('') : '<p>No products in this category.</p>';
+                ex.scrollIntoView({ behavior: 'smooth' });
+            };
+
+            // 1. NOVA Pie
+            novaChart.setOption({
+                tooltip: { trigger: 'item' },
+                series: [{
+                    type: 'pie',
+                    radius: ['40%', '70%'],
+                    label: { show: true, formatter: 'G{b}' },
+                    data: [
+                        { value: res.nova['1'].count, name: '1', itemStyle: { color: '#10b981' } },
+                        { value: res.nova['2'].count, name: '2', itemStyle: { color: '#34d399' } },
+                        { value: res.nova['3'].count, name: '3', itemStyle: { color: '#f59e0b' } },
+                        { value: res.nova['4'].count, name: '4', itemStyle: { color: '#ef4444' } }
+                    ]
+                }]
+            });
+            novaChart.on('click', (p) => showExplorer('NOVA Group ' + p.name, res.nova[p.name].items));
+
+            // 2. Nutrients Bar
+            nutrientChart.setOption({
+                tooltip: { trigger: 'axis' },
+                xAxis: { type: 'category', data: ['Sugar', 'Salt', 'Fat'] },
+                yAxis: { type: 'value', name: 'g / 100g' },
+                series: [{
+                    type: 'bar',
+                    data: [
+                        { value: res.nutrients.sugar, itemStyle: { color: '#f59e0b' } },
+                        { value: res.nutrients.salt, itemStyle: { color: '#94a3b8' } },
+                        { value: res.nutrients.fat, itemStyle: { color: '#ef4444' } }
+                    ],
+                    label: { show: true, position: 'top', formatter: '{c}g' }
+                }]
+            });
+
+            // 3. Eco Score Gauge
+            const ecoData = [
+                { value: res.eco.a.count, name: 'a', itemStyle: { color: '#15803d' } },
+                { value: res.eco.b.count, name: 'b', itemStyle: { color: '#16a34a' } },
+                { value: res.eco.c.count, name: 'c', itemStyle: { color: '#facc15' } },
+                { value: res.eco.d.count, name: 'd', itemStyle: { color: '#f97316' } },
+                { value: res.eco.e.count, name: 'e', itemStyle: { color: '#dc2626' } }
+            ].filter(i => i.value > 0);
+
+            ecoChart.setOption({
+                tooltip: { trigger: 'item' },
+                series: [{
+                    type: 'pie',
+                    radius: '60%',
+                    data: ecoData,
+                    label: { show: true, formatter: '{b}'.toUpperCase() }
+                }]
+            });
+            ecoChart.on('click', (p) => showExplorer('Eco-Score ' + p.name.toUpperCase(), res.eco[p.name].items));
+        });
+
+    // --- Budget Drift Logic ---
+    fetch('{% url "api_chart_data" %}?type=drift')
+        .then(response => response.json())
+        .then(res => {
+            const container = document.getElementById('driftContainer');
+            if (!res || res.length === 0) {
+                container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted);">Not enough repeat visits to calculate drift.</div>';
+                return;
+            }
+            
+            let html = '';
+            res.forEach(item => {
+                const color = item.status === 'up' ? '#ef4444' : item.status === 'down' ? '#10b981' : '#94a3b8';
+                const icon = item.status === 'up' ? '📈' : item.status === 'down' ? '📉' : '➖';
+                const sign = item.status === 'up' ? '+' : '';
+                
+                html += `<div style="display: flex; justify-content: space-between; align-items: center; background: white; padding: 1rem; border-radius: 8px; border: 1px solid var(--border);">
+                    <div>
+                        <strong style="font-size: 0.9rem;">${item.store}</strong>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);">Standard 10-item basket</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="color: ${color}; font-weight: 800; font-size: 1rem;">${icon} ${sign}${item.pct}%</div>
+                        <small style="color: var(--text-muted); font-size: 0.7rem;">${sign}R$ ${item.diff.toFixed(2)} total</small>
+                    </div>
+                </div>`;
+            });
+            container.innerHTML = html;
+        });
+
+    window.addEventListener('resize', () => {
+        heatmapChart.resize();
+        radarChart.resize();
+        paretoChart.resize();
+        abcPieChart.resize();
+        novaChart.resize();
+        nutrientChart.resize();
+        ecoChart.resize();
+    });
+</script>
+{% endblock %}

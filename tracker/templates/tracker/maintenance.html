@@ -1,0 +1,306 @@
+{% extends 'tracker/layout/base.html' %}
+
+{% block title %}System Maintenance - Grocery Tracker{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 2.5rem; display: flex; justify-content: space-between; align-items: center;">
+    <div>
+        <h1 style="font-size: 2rem; font-weight: 800; color: #1e293b; margin-bottom: 0.25rem;">System Maintenance.</h1>
+        <p style="color: var(--text-muted);">Manage background tasks, data enrichment, and system integrity.</p>
+    </div>
+    <div id="last-update-wrapper" style="text-align: right; color: var(--text-muted); font-size: 0.75rem; font-weight: 600;">
+        LIVE UPDATES: <span id="update-indicator" style="color: var(--primary); transition: opacity 0.3s;">●</span><br>
+        LAST: <span id="last-update-time">--:--:--</span>
+    </div>
+</div>
+
+<!-- Stats Row -->
+<div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem; margin-bottom: 2rem;">
+    <div class="card" style="text-align: center; margin-bottom: 0;">
+        <span style="display: block; font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Total Products</span>
+        <strong id="stat-total_products" style="font-size: 1.5rem;">{{ stats.total_products }}</strong>
+    </div>
+    <div class="card" style="text-align: center; margin-bottom: 0; border-left: 4px solid var(--accent);">
+        <span style="display: block; font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Queued Tasks</span>
+        <strong id="stat-queued_tasks" style="font-size: 1.5rem; color: var(--accent);">{{ stats.queued_tasks }}</strong>
+    </div>
+    <div class="card" style="text-align: center; margin-bottom: 0; border-left: 4px solid var(--danger);">
+        <span style="display: block; font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Missing Meta</span>
+        <strong id="stat-missing_metadata" style="font-size: 1.5rem;">{{ stats.missing_metadata }}</strong>
+    </div>
+    <div class="card" style="text-align: center; margin-bottom: 0; border-left: 4px solid var(--secondary);">
+        <span style="display: block; font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Successful</span>
+        <strong id="stat-successful_tasks" style="font-size: 1.5rem; color: var(--primary);">{{ stats.successful_tasks }}</strong>
+    </div>
+    <div class="card" style="text-align: center; margin-bottom: 0; border-left: 4px solid #ef4444;">
+        <span style="display: block; font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Failed</span>
+        <strong id="stat-failed_tasks" style="font-size: 1.5rem; color: #ef4444;">{{ stats.failed_tasks }}</strong>
+    </div>
+</div>
+
+<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 2rem;">
+    <!-- Left Column -->
+    <div>
+        <div class="card">
+            <h3 class="card-title">🚀 Enrichment Controls</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 2rem;">Trigger background enrichment for products. Note: This uses third-party APIs (Open Food Facts, Mercado Livre, etc.).</p>
+            
+            <div style="display: flex; gap: 1.5rem;">
+                <form method="POST" style="flex: 1;">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="requeue_missing">
+                    <button type="submit" class="btn btn-primary" style="width: 100%; padding: 1.5rem;">
+                        <span style="display: block; font-size: 1.25rem;">🔍 Enrich Missing</span>
+                        <span style="display: block; font-size: 0.75rem; font-weight: 400; opacity: 0.9; margin-top: 5px;">Scan and try to fix items</span>
+                    </button>
+                </form>
+
+                <form method="POST" style="flex: 1;">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="requeue_all">
+                    <button type="submit" class="btn btn-secondary" style="width: 100%; padding: 1.5rem; border: 2px solid var(--border);" onclick="return confirm('WARNING: This will re-scan ALL products. Are you sure?')">
+                        <span style="display: block; font-size: 1.25rem;">🔄 Force All</span>
+                        <span style="display: block; font-size: 0.75rem; font-weight: 400; opacity: 0.9; margin-top: 5px;">Refresh all data from all sources</span>
+                    </button>
+                </form>
+
+                <form method="POST" style="flex: 1;">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="purge_queue">
+                    <button type="submit" class="btn btn-danger" style="width: 100%; padding: 1.5rem;" onclick="return confirm('Are you sure you want to clear the pending queue?')">
+                        <span style="display: block; font-size: 1.25rem;">🗑️ Purge Queue</span>
+                        <span style="display: block; font-size: 0.75rem; font-weight: 400; opacity: 0.9; margin-top: 5px;">Clear all pending background tasks</span>
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3 class="card-title">📅 Active Schedules</h3>
+            <table class="table" id="table-schedules">
+                <thead>
+                    <tr>
+                        <th>Task Name</th>
+                        <th>Type</th>
+                        <th>Next Run</th>
+                        <th>Repeats</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in stats.schedules %}
+                    <tr>
+                        <td><strong>{{ s.name }}</strong><br><small>{{ s.func }}</small></td>
+                        <td><span class="badge badge-info">{{ s.schedule_type }}</span></td>
+                        <td>{{ s.next_run }}</td>
+                        <td>{{ s.repeats }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">No background schedules active.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Right Column -->
+    <div>
+        <div id="mapping-review-card" class="card" style="border-top: 4px solid var(--accent); {% if not stats.unconfirmed_mappings %}display: none;{% endif %}">
+            <h3 class="card-title">🧠 Review Fuzzy Matches</h3>
+            <p style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1.5rem;">The AI linked these store codes to products via name similarity. Please verify.</p>
+            
+            <div id="mapping-list-container" style="max-height: 500px; overflow-y: auto; padding-right: 5px;">
+                {% for m in stats.unconfirmed_mappings %}
+                <div id="mapping-{{ m.id }}" style="background: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+                        STORE: <strong>{{ m.store_name }}</strong> | CODE: <code>{{ m.internal_code }}</code>
+                    </div>
+                    <div style="font-weight: 700; margin-bottom: 1rem;">
+                        Linked to: <span style="color: var(--secondary);">{{ m.product_name }}</span>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button onclick="handleMapping({{ m.id }}, 'confirm')" class="btn btn-primary" style="flex: 1; padding: 0.5rem; font-size: 0.75rem;">Confirm ✅</button>
+                        <button onclick="handleMapping({{ m.id }}, 'delete')" class="btn btn-danger" style="flex: 1; padding: 0.5rem; font-size: 0.75rem;">Unlink ❌</button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="card" style="background: #f1f5f9; border: none;">
+            <h3 class="card-title">🛠️ Troubleshooting</h3>
+            <ul style="padding-left: 1.25rem; font-size: 0.85rem; color: var(--text-muted); line-height: 1.8;">
+                <li><strong>Worker Status:</strong> Ensure <code>python manage.py qcluster</code> is running.</li>
+                <li><strong>Fuzzy Matches:</strong> Unconfirmed links are used for history but flagged here for safety.</li>
+                <li><strong>API Limits:</strong> Force All may cause temporary blocks from third-party services.</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<!-- Task History -->
+<div class="card" style="margin-top: 2rem;">
+    <h3 class="card-title">📜 Recent Task Activity</h3>
+    <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">The latest 50 tasks processed by the background worker.</p>
+    
+    <div style="max-height: 600px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;">
+        <table class="table" id="table-recent-tasks" style="font-size: 0.85rem; margin-bottom: 0;">
+            <thead style="position: sticky; top: 0; z-index: 10; background: #f8fafc;">
+                <tr>
+                    <th>Task ID</th>
+                    <th>Function / Target</th>
+                    <th>Status</th>
+                    <th>Duration</th>
+                    <th>Finished</th>
+                    <th>Result/Error</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in stats.recent_tasks %}
+                <tr>
+                    <td><code style="font-size: 0.7rem;">{{ t.id }}</code></td>
+                    <td>
+                        <strong>{{ t.name }}</strong><br>
+                        <small style="color: var(--text-muted);">{{ t.func }}</small>
+                    </td>
+                    <td>
+                        {% if t.success %}
+                            <span class="badge badge-success">Success</span>
+                        {% else %}
+                            <span class="badge badge-danger">Failed</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ t.time_taken|floatformat:2 }}s</td>
+                    <td>{{ t.stopped|date:"H:i:s" }}</td>
+                    <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        <span style="color: {% if t.success %}var(--primary){% else %}var(--danger){% endif %}; font-size: 0.7rem;" title="{{ t.result }}">
+                            {{ t.result|truncatechars:50 }}
+                        </span>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">No task history found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    function handleMapping(mappingId, action) {
+        const formData = new FormData();
+        formData.append('action', action + '_mapping');
+        formData.append('mapping_id', mappingId);
+        formData.append('csrfmiddlewaretoken', '{{ csrf_token }}');
+
+        fetch(window.location.pathname, {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                const el = document.getElementById('mapping-' + mappingId);
+                el.style.opacity = '0';
+                setTimeout(() => el.remove(), 300);
+            }
+        });
+    }
+
+    function refreshStats() {
+        const indicator = document.getElementById('update-indicator');
+        indicator.style.opacity = '0.2';
+        
+        const url = window.location.pathname + '?ajax=1&t=' + new Date().getTime();
+        
+        fetch(url, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            cache: 'no-store'
+        })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('stat-total_products').innerText = data.total_products;
+            document.getElementById('stat-queued_tasks').innerText = data.queued_tasks;
+            document.getElementById('stat-missing_metadata').innerText = data.missing_metadata;
+            document.getElementById('stat-successful_tasks').innerText = data.successful_tasks;
+            document.getElementById('stat-failed_tasks').innerText = data.failed_tasks;
+
+            // Update Mapping Review List
+            const mappingCard = document.getElementById('mapping-review-card');
+            const mappingContainer = document.getElementById('mapping-list-container');
+            if (data.unconfirmed_mappings && data.unconfirmed_mappings.length > 0) {
+                mappingCard.style.display = 'block';
+                if (mappingContainer.children.length !== data.unconfirmed_mappings.length) {
+                    let mHtml = '';
+                    data.unconfirmed_mappings.forEach(m => {
+                        mHtml += `<div id="mapping-${m.id}" style="background: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+                                STORE: <strong>${m.store_name}</strong> | CODE: <code>${m.internal_code}</code>
+                            </div>
+                            <div style="font-weight: 700; margin-bottom: 1rem;">
+                                Linked to: <span style="color: var(--secondary);">${m.product_name}</span>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button onclick="handleMapping(${m.id}, 'confirm')" class="btn btn-primary" style="flex: 1; padding: 0.5rem; font-size: 0.75rem;">Confirm ✅</button>
+                                <button onclick="handleMapping(${m.id}, 'delete')" class="btn btn-danger" style="flex: 1; padding: 0.5rem; font-size: 0.75rem;">Unlink ❌</button>
+                            </div>
+                        </div>`;
+                    });
+                    mappingContainer.innerHTML = mHtml;
+                }
+            } else {
+                mappingCard.style.display = 'none';
+            }
+
+            const historyTable = document.getElementById('table-recent-tasks'); 
+            if (historyTable) {
+                const historyBody = historyTable.querySelector('tbody');
+                let html = '';
+                if (!data.recent_tasks || data.recent_tasks.length === 0) {
+                    html = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">No task history found.</td></tr>';
+                } else {
+                    data.recent_tasks.forEach(t => {
+                        const statusBadge = t.success ? '<span class="badge badge-success">Success</span>' : '<span class="badge badge-danger">Failed</span>';
+                        const resultColor = t.success ? 'var(--primary)' : 'var(--danger)';
+                        const resultText = t.result ? (t.result.length > 50 ? t.result.substring(0, 50) + '...' : t.result) : '';
+                        
+                        let stoppedTime = '---';
+                        if (t.stopped) {
+                            const date = new Date(t.stopped);
+                            stoppedTime = date.getHours().toString().padStart(2, '0') + ':' + 
+                                          date.getMinutes().toString().padStart(2, '0') + ':' + 
+                                          date.getSeconds().toString().padStart(2, '0');
+                        }
+
+                        html += `<tr>
+                            <td><code style="font-size: 0.7rem;">${t.id}</code></td>
+                            <td><strong>${t.name || ''}</strong><br><small style="color: var(--text-muted);">${t.func}</small></td>
+                            <td>${statusBadge}</td>
+                            <td>${t.time_taken ? t.time_taken.toFixed(2) : '0'}s</td>
+                            <td>${stoppedTime}</td>
+                            <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                <span style="color: ${resultColor}; font-size: 0.7rem;" title="${t.result}">${resultText}</span>
+                            </td>
+                        </tr>`;
+                    });
+                }
+                historyBody.innerHTML = html;
+            }
+            
+            indicator.style.opacity = '1';
+            const now = new Date();
+            document.getElementById('last-update-time').innerText = 
+                now.getHours().toString().padStart(2, '0') + ':' + 
+                now.getMinutes().toString().padStart(2, '0') + ':' + 
+                now.getSeconds().toString().padStart(2, '0');
+        })
+        .catch(err => {
+            console.error('Auto-refresh failed:', err);
+            indicator.style.color = 'var(--danger)';
+        });
+    }
+
+    setInterval(refreshStats, 5000);
+    refreshStats();
+</script>
+{% endblock %}

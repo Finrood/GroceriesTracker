@@ -1,0 +1,66 @@
+{% extends 'tracker/layout/base.html' %}
+
+{% block title %}Shopping Optimizer - Grocery Intelligence{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 2.5rem;">
+    <h1 style="font-size: 2rem; font-weight: 800; color: #1e293b; margin-bottom: 0.25rem;">Golden Shopping List.</h1>
+    <p style="color: var(--text-muted);">The most efficient way to shop: lowest recorded prices across all stores.</p>
+</div>
+
+<!-- Optimizer Search -->
+<div class="card" style="padding: 1.25rem; margin-bottom: 2rem; background: #f8fafc; border: 1px solid var(--border);">
+    <form method="GET" style="display: flex; gap: 1rem; align-items: end;">
+        <div style="flex: 1;">
+            <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Search for items to find their best price</label>
+            <input type="text" name="q" value="{{ current_query }}" placeholder="e.g. Arroz, Leite, Carne..." style="width: 100%; padding: 0.75rem; border-radius: 8px; border: 1px solid var(--border);">
+        </div>
+        <button type="submit" class="btn btn-primary" style="padding: 0.75rem 2rem;">Search Deals</button>
+        {% if current_query %}
+            <a href="{% url 'shopping_optimizer' %}" class="btn btn-secondary" style="padding: 0.75rem;">Clear</a>
+        {% endif %}
+    </form>
+</div>
+
+<div class="card" style="padding: 0;">
+    <div style="padding: 1.5rem; background: #fafafa; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+        <h3 class="card-title" style="margin: 0;">Target Stores for Cheapest Trip</h3>
+        <span style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted);">{{ optimized_list|length }} Recommendations</span>
+    </div>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Product & Brand</th>
+                <th>Go To This Store</th>
+                <th style="text-align: right;">Best Price</th>
+                <th style="text-align: center;">Confidence</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in optimized_list %}
+            <tr>
+                <td>
+                    <strong>{{ item.product.name }}</strong><br>
+                    <small style="color: var(--text-muted);">Brand: {{ item.product.brand|default:"N/A" }}</small>
+                </td>
+                <td>
+                    <span class="badge badge-info" style="font-size: 0.875rem; background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd;">
+                        📍 {{ item.store_name }}
+                    </span>
+                </td>
+                <td style="text-align: right;">
+                    <div style="font-weight: 800; color: var(--primary); font-size: 1.1rem;">R$ {{ item.price|floatformat:2 }}</div>
+                </td>
+                <td style="text-align: center;">
+                    <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">{{ item.date|date:"d M, Y" }}</span>
+                </td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="4" style="text-align: center; padding: 4rem; color: var(--text-muted);">No products found in your shopping history.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
