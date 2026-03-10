@@ -14,10 +14,14 @@
 </head>
 <body class="">
     <div id="toast-container"></div>
+    <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
 
-    <button class="menu-toggle" onclick="toggleSidebar()">
-        ☰
-    </button>
+    <header class="mobile-header">
+        <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+        <a href="{% url 'index' %}" class="sidebar-brand" style="margin-bottom: 0; padding: 0; font-size: 1.25rem;">
+            <span>🛒</span> <span>Tracker.</span>
+        </a>
+    </header>
 
     <nav class="sidebar" id="sidebar">
         <a href="{% url 'index' %}" class="sidebar-brand">
@@ -114,10 +118,31 @@
     </main>
     
     <script>
-        // 1. Sidebar Toggle
+        // 1. Sidebar & Overlay Toggle
         function toggleSidebar() {
-            document.getElementById('sidebar').classList.toggle('active');
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebar-overlay');
+            const body = document.body;
+            
+            sidebar.classList.toggle('active');
+            overlay.classList.toggle('active');
+            
+            // Prevent scrolling when sidebar is open on mobile
+            if (sidebar.classList.contains('active')) {
+                body.style.overflow = 'hidden';
+            } else {
+                body.style.overflow = '';
+            }
         }
+
+        // Close sidebar on link click (useful for mobile SPAs or slow loads)
+        document.querySelectorAll('.nav-item a').forEach(link => {
+            link.addEventListener('click', () => {
+                if (window.innerWidth <= 1024) {
+                    toggleSidebar();
+                }
+            });
+        });
 
         // 2. Dark Mode Persistency
         const themeToggle = document.getElementById('theme-toggle');

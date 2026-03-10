@@ -17,87 +17,15 @@
         {% csrf_token %}
         <div class="form-group">
             <label for="url" class="form-label">Receipt URL (SEFAZ-SC)</label>
-            <div class="flex gap-2">
-                <input type="url" id="url" name="url" placeholder="https://sat.sef.sc.gov.br/tax.NET/..." required 
-                       class="form-control" style="flex: 1;"
-                       onfocus="this.style.borderColor='var(--primary)'; this.style.background='white';">
-                <button type="button" id="scanBtn" class="btn btn-secondary" title="Scan QR Code" onclick="startScanner()">
-                    📸 <span class="hidden-mobile">Scan</span>
-                </button>
-            </div>
+            <input type="url" id="url" name="url" placeholder="https://sat.sef.sc.gov.br/tax.NET/..." required 
+                   class="form-control"
+                   onfocus="this.style.borderColor='var(--primary)'; this.style.background='white';">
         </div>
         <button type="submit" class="btn btn-primary w-full" style="padding: 1rem; font-size: 1.1rem; border-radius: 12px;">
             🚀 Extract Intelligence
         </button>
     </form>
 </div>
-
-<!-- QR Scanner Modal -->
-<div id="scannerModal" style="display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9);">
-    <div style="position: relative; max-width: 500px; margin: 2rem auto; text-align: center;">
-        <button onclick="stopScanner()" class="btn btn-danger" style="position: absolute; top: -3rem; right: 1rem; z-index: 2001;">Close X</button>
-        <div id="reader" style="width: 100%; border-radius: 12px; overflow: hidden; background: black;"></div>
-        <p class="text-muted mt-4" style="color: #cbd5e1;">Point scanning camera at the QR Code on your receipt.</p>
-    </div>
-</div>
-
-<script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
-<script>
-    let html5QrcodeScanner;
-
-    function startScanner() {
-        document.getElementById('scannerModal').style.display = 'block';
-        html5QrcodeScanner = new Html5Qrcode("reader");
-        
-        const config = { fps: 10, qrbox: { width: 250, height: 250 } };
-        
-        // Prefer back camera
-        html5QrcodeScanner.start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
-        .catch(err => {
-            console.error("Error starting scanner", err);
-            alert("Camera access failed. Please ensure you have granted permission.");
-            stopScanner();
-        });
-    }
-
-    function onScanSuccess(decodedText, decodedResult) {
-        // Handle the scanned code
-        console.log(`Scan result: ${decodedText}`, decodedResult);
-        
-        // Some QR codes are just the URL, others might be raw text. 
-        // We assume it's the URL for SEFAZ.
-        document.getElementById('url').value = decodedText;
-        
-        stopScanner();
-        
-        // Optional: Auto-submit if it looks like a valid URL
-        if (decodedText.startsWith('http')) {
-            // Slight delay for visual confirmation
-            setTimeout(() => {
-                document.getElementById('receiptForm').submit();
-            }, 500);
-        }
-    }
-
-    function onScanFailure(error) {
-        // handle scan failure, usually better to ignore and keep scanning.
-        // console.warn(`Code scan error = ${error}`);
-    }
-
-    function stopScanner() {
-        if (html5QrcodeScanner) {
-            html5QrcodeScanner.stop().then(() => {
-                document.getElementById('scannerModal').style.display = 'none';
-                html5QrcodeScanner.clear();
-            }).catch(err => {
-                console.error("Failed to stop scanner", err);
-                document.getElementById('scannerModal').style.display = 'none';
-            });
-        } else {
-            document.getElementById('scannerModal').style.display = 'none';
-        }
-    }
-</script>
 
 {% if latest_receipts %}
 <div style="max-width: 800px; margin: 0 auto;">
