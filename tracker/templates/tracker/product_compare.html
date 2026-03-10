@@ -3,23 +3,23 @@
 {% block title %}Price Intelligence - Grocery Tracker{% endblock %}
 
 {% block content %}
-<div style="margin-bottom: 2.5rem; display: flex; justify-content: space-between; align-items: center;">
+<div class="page-header">
     <div>
-        <h1 style="font-size: 2rem; font-weight: 800; color: #1e293b; margin-bottom: 0.25rem;">Market Intelligence.</h1>
-        <p style="color: var(--text-muted);">Compare all your products by normalized unit price (1kg/1L/1un).</p>
+        <h1 class="page-title">Market Intelligence.</h1>
+        <p class="text-muted">Compare all your products by normalized unit price (1kg/1L/1un).</p>
     </div>
 </div>
 
 <!-- Advanced Intelligence Filters -->
-<div class="card" style="padding: 1.25rem; margin-bottom: 2rem; background: #f8fafc; border: 1px solid var(--border);">
-    <form method="GET" style="display: grid; grid-template-columns: 2fr 1.5fr 1.5fr auto auto; gap: 1rem; align-items: end;">
+<div class="card mb-6" style="background: #f8fafc;">
+    <form method="GET" class="grid gap-4" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); align-items: end;">
         <div>
-            <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Search Product or Brand</label>
-            <input type="text" name="q" value="{{ current_query }}" placeholder="e.g. Leite, Omo, Yogurt..." style="width: 100%; padding: 0.625rem; border-radius: 8px; border: 1px solid var(--border);">
+            <label class="form-label uppercase text-xs">Search Product or Brand</label>
+            <input type="text" name="q" id="tableSearch" value="{{ current_query }}" placeholder="Search locally or hit Enter for server..." class="form-control">
         </div>
         <div>
-            <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Category</label>
-            <select name="category" style="width: 100%; padding: 0.625rem; border-radius: 8px; border: 1px solid var(--border);">
+            <label class="form-label uppercase text-xs">Category</label>
+            <select name="category" class="form-control form-select">
                 <option value="">All Categories</option>
                 {% for cat in categories %}
                 <option value="{{ cat.id }}" {% if current_category == cat.id|stringformat:"s" %}selected{% endif %}>{{ cat.name }}</option>
@@ -27,61 +27,65 @@
             </select>
         </div>
         <div>
-            <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Sort Order</label>
-            <select name="sort" style="width: 100%; padding: 0.625rem; border-radius: 8px; border: 1px solid var(--border);">
+            <label class="form-label uppercase text-xs">Sort Order</label>
+            <select name="sort" class="form-control form-select">
                 <option value="avg_norm_price" {% if current_sort == "avg_norm_price" %}selected{% endif %}>Cheapest First (Norm.)</option>
                 <option value="-avg_norm_price" {% if current_sort == "-avg_norm_price" %}selected{% endif %}>Most Expensive (Norm.)</option>
                 <option value="name" {% if current_sort == "name" %}selected{% endif %}>Name (A-Z)</option>
             </select>
         </div>
-        <button type="submit" class="btn btn-primary" style="padding: 0.625rem 1.5rem;">Analyze</button>
-        <a href="{% url 'product_comparison' %}" class="btn btn-secondary" style="padding: 0.625rem;">Clear</a>
+        <div class="flex gap-2">
+            <button type="submit" class="btn btn-primary flex-1">Analyze</button>
+            <a href="{% url 'product_comparison' %}" class="btn btn-secondary">Clear</a>
+        </div>
     </form>
 </div>
 
-<div class="card" style="padding: 0;">
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Product & Brand</th>
-                <th>Category</th>
-                <th style="text-align: right;">Global Avg (Norm.)</th>
-                <th style="text-align: right;">Frequency</th>
-                <th style="text-align: center;">Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for product in page_obj %}
-            <tr>
-                <td>
-                    <strong style="color: var(--text-main); font-size: 0.9375rem;">{{ product.name }}</strong><br>
-                    <small style="color: var(--text-muted);">Brand: {{ product.brand|default:"Generic" }}</small>
-                </td>
-                <td><span class="badge badge-muted">{{ product.category.name }}</span></td>
-                <td style="text-align: right;">
-                    <div style="font-weight: 800; color: var(--primary);">R$ {{ product.avg_norm_price|floatformat:2 }}</div>
-                    <small style="color: var(--text-muted); font-size: 0.7rem;">per 1kg / 1L / 1un</small>
-                </td>
-                <td style="text-align: right;">
-                    <strong>{{ product.purchase_count }}</strong> trips<br>
-                    <small style="color: var(--text-muted);">{{ product.total_volume|floatformat:2 }} total</small>
-                </td>
-                <td style="text-align: center;">
-                    <a href="{% url 'product_history' product.id %}" class="btn btn-secondary" style="padding: 0.5rem 0.75rem; font-size: 0.8125rem;">📉 Price History</a>
-                </td>
-            </tr>
-            {% empty %}
-            <tr>
-                <td colspan="5" style="text-align: center; padding: 4rem; color: var(--text-muted);">No products found matching your search.</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div class="card" style="padding: 0; overflow: hidden;">
+    <div class="table-responsive">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Product & Brand</th>
+                    <th>Category</th>
+                    <th style="text-align: right;">Global Avg (Norm.)</th>
+                    <th style="text-align: right;">Frequency</th>
+                    <th style="text-align: center;">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="productTableBody">
+                {% for product in page_obj %}
+                <tr>
+                    <td>
+                        <strong class="text-main" style="font-size: 0.9375rem;">{{ product.name }}</strong><br>
+                        <small class="text-muted">Brand: {{ product.brand|default:"Generic" }}</small>
+                    </td>
+                    <td><span class="badge badge-muted">{{ product.category.name }}</span></td>
+                    <td style="text-align: right;">
+                        <div class="text-primary font-bold">R$ {{ product.avg_norm_price|floatformat:2 }}</div>
+                        <small class="text-muted" style="font-size: 0.7rem;">per 1kg / 1L / 1un</small>
+                    </td>
+                    <td style="text-align: right;">
+                        <strong class="text-main">{{ product.purchase_count }}</strong> trips<br>
+                        <small class="text-muted">{{ product.total_volume|floatformat:2 }} total</small>
+                    </td>
+                    <td style="text-align: center;">
+                        <a href="{% url 'product_history' product.id %}" class="btn btn-secondary btn-sm">📉 History</a>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="5" class="text-center text-muted py-16">No products found matching your search.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 
 <!-- Pagination -->
 {% if page_obj.has_other_pages %}
-<div style="margin-top: 2rem; display: flex; justify-content: center; gap: 0.5rem;">
+<div class="flex justify-center gap-2 mt-8 flex-wrap">
     {% if page_obj.has_previous %}
         <a href="?page={{ page_obj.previous_page_number }}&q={{ current_query }}&category={{ current_category }}&sort={{ current_sort }}" class="btn btn-secondary">Prev</a>
     {% endif %}
@@ -91,4 +95,65 @@
     {% endif %}
 </div>
 {% endif %}
+
+<script>
+    document.getElementById('tableSearch').addEventListener('input', function() {
+        const query = this.value.toLowerCase().trim();
+        const rows = document.querySelectorAll('#productTableBody tr');
+        
+        rows.forEach(row => {
+            const cells = row.querySelectorAll('td');
+            let found = false;
+            
+            cells.forEach(cell => {
+                // Clear previous highlights safely
+                const highlights = cell.querySelectorAll('.highlight-match');
+                highlights.forEach(h => {
+                    const text = document.createTextNode(h.textContent);
+                    h.parentNode.replaceChild(text, h);
+                });
+                cell.normalize();
+
+                if (query === "") {
+                    found = true;
+                    return;
+                }
+
+                if (cell.textContent.toLowerCase().includes(query)) {
+                    found = true;
+                    highlightText(cell, query);
+                }
+            });
+            
+            row.style.display = found ? '' : 'none';
+        });
+    });
+
+    function highlightText(element, query) {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+        const nodes = [];
+        let node;
+        while (node = walker.nextNode()) nodes.push(node);
+
+        nodes.forEach(node => {
+            const text = node.textContent;
+            const lowerText = text.toLowerCase();
+            let index = lowerText.indexOf(query);
+            
+            if (index >= 0) {
+                const parent = node.parentNode;
+                const before = document.createTextNode(text.substring(0, index));
+                const match = document.createElement('span');
+                match.className = 'highlight-match';
+                match.textContent = text.substring(index, index + query.length);
+                const after = document.createTextNode(text.substring(index + query.length));
+                
+                parent.insertBefore(before, node);
+                parent.insertBefore(match, node);
+                parent.insertBefore(after, node);
+                parent.removeChild(node);
+            }
+        });
+    }
+</script>
 {% endblock %}

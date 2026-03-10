@@ -1,3 +1,4 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7,160 +8,18 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛒</text></svg>">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --primary: #10b981;
-            --primary-dark: #059669;
-            --secondary: #6366f1;
-            --accent: #f59e0b;
-            --danger: #ef4444;
-            --bg-body: #f8fafc;
-            --bg-card: #ffffff;
-            --text-main: #1e293b;
-            --text-muted: #64748b;
-            --border: #e2e8f0;
-            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-            --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
-        }
-
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { 
-            font-family: 'Inter', sans-serif; 
-            background: var(--bg-body); 
-            color: var(--text-main);
-            display: flex;
-            min-height: 100vh;
-        }
-
-        /* Sidebar Navigation */
-        .sidebar {
-            width: 260px;
-            background: #1e293b;
-            color: white;
-            padding: 2rem 1.5rem;
-            position: fixed;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            gap: 2rem;
-        }
-
-        .sidebar-brand {
-            font-size: 1.5rem;
-            font-weight: 800;
-            color: var(--primary);
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            text-decoration: none;
-        }
-
-        .nav-list { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
-        .nav-item a {
-            color: #94a3b8;
-            text-decoration: none;
-            padding: 0.75rem 1rem;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            font-weight: 500;
-            transition: 0.2s;
-        }
-        .nav-item a:hover, .nav-item a.active {
-            background: #334155;
-            color: white;
-        }
-        .nav-item a.active { color: var(--primary); }
-
-        /* Main Content */
-        .main-content {
-            margin-left: 260px;
-            flex: 1;
-            padding: 2.5rem;
-            width: calc(100% - 260px);
-        }
-
-        .container-lg { max-width: 1200px; margin: 0 auto; }
-
-        /* Global Components */
-        .card {
-            background: var(--bg-card);
-            border-radius: 12px;
-            padding: 1.5rem;
-            box-shadow: var(--shadow);
-            border: 1px solid var(--border);
-            margin-bottom: 2rem;
-        }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-        .card-title { font-size: 1.1rem; font-weight: 700; color: var(--text-main); }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0.625rem 1.25rem;
-            border-radius: 8px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: 0.2s;
-            text-decoration: none;
-            border: none;
-            gap: 0.5rem;
-            font-size: 0.9375rem;
-        }
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-primary:hover { background: var(--primary-dark); transform: translateY(-1px); }
-        .btn-secondary { background: white; color: var(--text-main); border: 1px solid var(--border); }
-        .btn-secondary:hover { background: #f1f5f9; }
-        .btn-danger { background: #fee2e2; color: var(--danger); }
-        .btn-danger:hover { background: #fecaca; }
-
-        .table { width: 100%; border-collapse: collapse; }
-        .table th {
-            text-align: left;
-            padding: 1rem;
-            background: #f8fafc;
-            color: var(--text-muted);
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-weight: 700;
-            border-bottom: 2px solid var(--border);
-        }
-        .table td {
-            padding: 1rem;
-            border-bottom: 1px solid var(--border);
-            vertical-align: middle;
-        }
-        .table tr:last-child td { border-bottom: none; }
-
-        .badge {
-            padding: 0.25rem 0.625rem;
-            border-radius: 6px;
-            font-size: 0.75rem;
-            font-weight: 700;
-            display: inline-block;
-        }
-        .badge-success { background: #dcfce7; color: #166534; }
-        .badge-info { background: #e0f2fe; color: #075985; }
-        .badge-muted { background: #f1f5f9; color: #475569; }
-
-        .messages { margin-bottom: 1.5rem; list-style: none; }
-        .message { padding: 1rem; border-radius: 8px; margin-bottom: 0.5rem; font-weight: 500; }
-        .message-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
-        .message-error { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
-
-        @media (max-width: 1024px) {
-            .sidebar { width: 70px; padding: 2rem 0.25rem; align-items: center; }
-            .sidebar-brand span:last-child, .nav-item span:last-child { display: none; }
-            .nav-item a { justify-content: center; padding: 0.75rem 0; width: 50px; }
-            .main-content { margin-left: 70px; width: calc(100% - 70px); padding: 1.5rem; }
-        }
-    </style>
+    <link rel="stylesheet" href="{% static 'tracker/css/style.css' %}">
+    <link rel="manifest" href="{% static 'tracker/manifest.json' %}">
+    <meta name="theme-color" content="#10b981">
 </head>
-<body>
-    <nav class="sidebar">
+<body class="">
+    <div id="toast-container"></div>
+
+    <button class="menu-toggle" onclick="toggleSidebar()">
+        ☰
+    </button>
+
+    <nav class="sidebar" id="sidebar">
         <a href="{% url 'index' %}" class="sidebar-brand">
             <span>🛒</span> <span>Tracker.</span>
         </a>
@@ -208,7 +67,6 @@
             <li class="nav-item" style="margin-top: 1.5rem; border-top: 1px solid #334155; padding-top: 1rem;">
                 <p style="font-size: 0.7rem; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 0.75rem; padding: 0 1rem;">Admin: User Filter</p>
                 <form method="GET" id="adminUserFilter" style="padding: 0 1rem;">
-                    <!-- Preserve existing q and sort params -->
                     {% for key, value in request.GET.items %}
                         {% if key != 'user_ids' and key != 'page' %}
                             <input type="hidden" name="{{ key }}" value="{{ value }}">
@@ -220,16 +78,23 @@
                             <option value="{{ u.id }}" {% if u.id in selected_user_ids %}selected{% endif %}>{{ u.username }}</option>
                         {% endfor %}
                     </select>
-                    <small style="color: #64748b; font-size: 0.65rem; margin-top: 5px; display: block;">Hold Ctrl to multi-select</small>
                 </form>
             </li>
             {% endif %}
 
-            <li class="nav-item" style="margin-top: auto; border-top: 1px solid #334155; padding-top: 1rem;">
+            <div class="theme-switch-wrapper">
+                <span class="theme-label" style="font-size: 0.75rem; font-weight: 600; color: #94a3b8;">🌙 Night Mode</span>
+                <label class="theme-switch">
+                    <input type="checkbox" id="theme-toggle">
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <li class="nav-item" style="border-top: 1px solid #334155; padding-top: 1rem;">
                 {% if user.is_authenticated %}
                 <form action="{% url 'logout' %}" method="post">
                     {% csrf_token %}
-                    <button type="submit" style="background:none; border:none; color: #94a3b8; cursor: pointer; display: flex; align-items: center; gap: 1rem; font-weight: 500; font-size: 1rem; padding: 0.75rem 1rem;">
+                    <button type="submit" style="background:none; border:none; color: #94a3b8; cursor: pointer; display: flex; align-items: center; gap: 1rem; font-weight: 500; font-size: 1rem; padding: 0.75rem 1rem; width: 100%;">
                         <span>🚪</span> <span>Logout</span>
                     </button>
                 </form>
@@ -244,16 +109,73 @@
 
     <main class="main-content">
         <div class="container-lg">
-            {% if messages %}
-                <ul class="messages">
-                    {% for message in messages %}
-                        <li class="message message-{{ message.tags }}">{{ message }}</li>
-                    {% endfor %}
-                </ul>
-            {% endif %}
-
             {% block content %}{% endblock %}
         </div>
     </main>
+    
+    <script>
+        // 1. Sidebar Toggle
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('active');
+        }
+
+        // 2. Dark Mode Persistency
+        const themeToggle = document.getElementById('theme-toggle');
+        const body = document.body;
+        
+        if (localStorage.getItem('theme') === 'dark') {
+            body.classList.add('dark-mode');
+            themeToggle.checked = true;
+        }
+
+        themeToggle.addEventListener('change', () => {
+            if (themeToggle.checked) {
+                body.classList.add('dark-mode');
+                localStorage.setItem('theme', 'dark');
+            } else {
+                body.classList.remove('dark-mode');
+                localStorage.setItem('theme', 'light');
+            }
+        });
+
+        // 3. Toast Notification System
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `<span>${type === 'success' ? '✅' : '⚠️'}</span><span>${message}</span>`;
+            toast.onclick = () => toast.remove();
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateX(100%)';
+                setTimeout(() => toast.remove(), 300);
+            }, 5000);
+        }
+
+        // Auto-show Django messages as toasts
+        {% if messages %}
+            {% for message in messages %}
+                showToast("{{ message }}", "{{ message.tags }}");
+            {% endfor %}
+        {% endif %}
+
+        // 4. Global Loading State Handler
+        document.querySelectorAll('form').forEach(form => {
+            form.addEventListener('submit', function() {
+                const btn = this.querySelector('button[type="submit"]');
+                if (btn && !btn.classList.contains('no-loading')) {
+                    btn.classList.add('btn-loading');
+                }
+            });
+        });
+
+        // 5. PWA Service Worker Registration
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('{% static "tracker/sw.js" %}');
+            });
+        }
+    </script>
 </body>
 </html>

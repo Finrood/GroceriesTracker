@@ -376,30 +376,54 @@ class AnalyticsService:
     @staticmethod
     def get_spending_forecast(user):
         """
-        Projects end-of-month spending based on current daily burn rate.
+        Projects end-of-month spending using a Weighted Historical Anchor.
+        Combines current month velocity with the average of the last 3 months.
         """
         today = timezone.now()
-        first_day = today.replace(day=1)
+        first_day = today.replace(day=1, hour=0, minute=0, second=0)
         days_passed = today.day
         last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
         total_days = last_day.day
         
+        # 1. Current Month Velocity
         current_spend = Receipt.objects.filter(
             user=user, 
             issue_date__gte=first_day, 
             issue_date__lte=today
         ).aggregate(sum=Sum(F('total_amount') - F('discount')))['sum'] or Decimal('0')
         
-        if current_spend == 0 or days_passed < 2: return None
+        daily_burn_current = float(current_spend) / days_passed
+
+        # 2. Historical Anchor (Avg of last 3 full months)
+        three_months_ago = (first_day - timedelta(days=1)).replace(day=1) - timedelta(days=60)
+        hist_stats = Receipt.objects.filter(
+            user=user,
+            issue_date__lt=first_day,
+            issue_date__gte=three_months_ago
+        ).annotate(month=TruncMonth('issue_date')).values('month').annotate(
+            monthly_total=Sum(F('total_amount') - F('discount'))
+        )
         
-        daily_burn = float(current_spend) / days_passed
-        projected_total = daily_burn * total_days
+        if hist_stats.count() > 0:
+            avg_hist_monthly = sum(float(m['monthly_total']) for m in hist_stats) / hist_stats.count()
+            avg_hist_daily = avg_hist_monthly / 30.4 # Standard month length
+        else:
+            avg_hist_daily = daily_burn_current
+
+        # 3. Weighted Projection
+        # Early in the month, history is 80% of the weight. By the end, current trend is 100%.
+        weight_current = days_passed / total_days
+        weight_hist = 1.0 - weight_current
+        
+        smart_daily_burn = (daily_burn_current * weight_current) + (avg_hist_daily * weight_hist)
+        projected_total = smart_daily_burn * total_days
         
         return {
             'current': float(current_spend),
             'projected': round(projected_total, 2),
             'days_left': total_days - days_passed,
-            'burn_rate': round(daily_burn, 2)
+            'burn_rate': round(daily_burn_current, 2),
+            'confidence': 'High' if days_passed > 15 else 'Medium' if days_passed > 5 else 'Low'
         }
 
     @staticmethod

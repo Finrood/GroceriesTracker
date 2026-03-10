@@ -3,59 +3,63 @@
 {% block title %}Inflation Tracker - Grocery Intelligence{% endblock %}
 
 {% block content %}
-<div style="margin-bottom: 2.5rem;">
-    <h1 style="font-size: 2rem; font-weight: 800; color: #1e293b; margin-bottom: 0.25rem;">Inflation Analysis.</h1>
-    <p style="color: var(--text-muted);">Tracking price movements across global averages and specific categories.</p>
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Inflation Analysis.</h1>
+        <p class="text-muted">Tracking price movements across global averages and specific categories.</p>
+    </div>
 </div>
 
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2rem;">
+<div class="grid grid-cols-2 gap-6 mb-6" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));">
     <!-- Chart 1: Global Index -->
     <div class="card">
         <h3 class="card-title">📈 Global Price Index</h3>
-        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">Avg normalized price (1kg/1L) for ALL items.</p>
+        <p class="text-muted mb-4" style="font-size: 0.85rem;">Avg normalized price (1kg/1L) for ALL items.</p>
         <div id="globalChart" style="height: 350px;"></div>
     </div>
 
     <!-- Chart 2: Category Breakdown -->
     <div class="card">
         <h3 class="card-title">🍕 Category-Specific Trends</h3>
-        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">Comparing price evolution for top categories.</p>
+        <p class="text-muted mb-4" style="font-size: 0.85rem;">Comparing price evolution for top categories.</p>
         <div id="categoryChart" style="height: 350px;"></div>
     </div>
 </div>
 
-<div class="card" style="padding: 0;">
-    <div style="padding: 1.5rem; border-bottom: 1px solid var(--border);">
-        <h3 class="card-title">Monthly Price Variance (Global)</h3>
+<div class="card" style="padding: 0; overflow: hidden;">
+    <div class="card-header" style="padding: 1.5rem; border-bottom: 1px solid var(--border); margin-bottom: 0;">
+        <h3 class="card-title" style="margin: 0;">Monthly Price Variance (Global)</h3>
     </div>
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Month</th>
-                <th style="text-align: right;">Avg. Price (Base)</th>
-                <th style="text-align: right;">Monthly Change</th>
-                <th style="text-align: center;">Sample Size</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for s in stats %}
-            <tr>
-                <td><strong>{{ s.month|date:"F Y" }}</strong></td>
-                <td style="text-align: right;">R$ {{ s.avg_price|floatformat:2 }}</td>
-                <td style="text-align: right;">
-                    {% if s.change == 0 %}
-                        <span class="badge badge-muted">0.0%</span>
-                    {% elif s.change > 0 %}
-                        <span class="badge badge-danger" style="background: #fee2e2; color: #b91c1c;">+{{ s.change|floatformat:1 }}%</span>
-                    {% else %}
-                        <span class="badge badge-success" style="background: #dcfce7; color: #166534;">{{ s.change|floatformat:1 }}%</span>
-                    {% endif %}
-                </td>
-                <td style="text-align: center;">{{ s.count }} items</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="table-responsive">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Month</th>
+                    <th style="text-align: right;">Avg. Price (Base)</th>
+                    <th style="text-align: right;">Monthly Change</th>
+                    <th style="text-align: center;">Sample Size</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in stats %}
+                <tr>
+                    <td><strong>{{ s.month|date:"F Y" }}</strong></td>
+                    <td style="text-align: right;">R$ {{ s.avg_price|floatformat:2 }}</td>
+                    <td style="text-align: right;">
+                        {% if s.change == 0 %}
+                            <span class="badge badge-muted">0.0%</span>
+                        {% elif s.change > 0 %}
+                            <span class="badge badge-danger">+{{ s.change|floatformat:1 }}%</span>
+                        {% else %}
+                            <span class="badge badge-success">{{ s.change|floatformat:1 }}%</span>
+                        {% endif %}
+                    </td>
+                    <td style="text-align: center;">{{ s.count }} items</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 
 {{ labels|json_script:"chart-labels" }}

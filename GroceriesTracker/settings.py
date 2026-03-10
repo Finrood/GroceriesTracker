@@ -36,6 +36,9 @@ ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'groceries.samuelpetre.com').split(',
 if not ALLOWED_HOSTS or ALLOWED_HOSTS == ['']:
     ALLOWED_HOSTS = ['groceries.samuelpetre.com']
 
+# Allow local development
+ALLOWED_HOSTS += ['localhost', '127.0.0.1', '[::1]']
+
 # Proper HTTPS detection behind Nginx
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
@@ -128,6 +131,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'tracker.context_processors.admin_context',
             ],
         },
     },

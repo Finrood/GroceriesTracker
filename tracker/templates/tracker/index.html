@@ -3,76 +3,150 @@
 {% block title %}Add New Receipt - Grocery Tracker{% endblock %}
 
 {% block content %}
-<div class="header-section" style="margin-bottom: 3rem; text-align: center;">
-    <h1 style="font-size: 2.25rem; font-weight: 800; color: #1e293b; margin-bottom: 0.5rem;">New Purchase.</h1>
-    <p style="color: var(--text-muted); font-size: 1.125rem;">Paste the URL from your SC SEFAZ receipt to analyze prices instantly.</p>
+<div class="page-header" style="justify-content: center; text-align: center; flex-direction: column;">
+    <h1 class="page-title">New Purchase.</h1>
+    <p class="text-muted" style="font-size: 1.125rem;">Paste the URL from your SC SEFAZ receipt to analyze prices instantly.</p>
 </div>
 
-<div class="card" style="max-width: 800px; margin: 0 auto 3rem; padding: 2.5rem; border-top: 6px solid var(--primary); transform: translateY(-10px); transition: 0.3s;">
+<div class="card" style="max-width: 800px; margin: 0 auto 3rem; padding: 2.5rem; border-top: 6px solid var(--primary); transform: translateY(-10px);">
     {% if error %}
         <div class="message message-error">{{ error }}</div>
     {% endif %}
 
     <form action="{% url 'process_nfce' %}" method="POST" id="receiptForm">
         {% csrf_token %}
-        <div style="margin-bottom: 1.5rem;">
-            <label for="url" style="display: block; font-weight: 700; font-size: 0.875rem; color: #475569; margin-bottom: 0.75rem;">Receipt URL (SEFAZ-SC)</label>
-            <input type="url" id="url" name="url" placeholder="https://sat.sef.sc.gov.br/tax.NET/..." required 
-                   style="width: 100%; padding: 1rem 1.25rem; border: 2px solid #e2e8f0; border-radius: 12px; font-size: 1rem; transition: 0.2s; background: #f8fafc;"
-                   onfocus="this.style.borderColor='var(--primary)'; this.style.background='white';">
+        <div class="form-group">
+            <label for="url" class="form-label">Receipt URL (SEFAZ-SC)</label>
+            <div class="flex gap-2">
+                <input type="url" id="url" name="url" placeholder="https://sat.sef.sc.gov.br/tax.NET/..." required 
+                       class="form-control" style="flex: 1;"
+                       onfocus="this.style.borderColor='var(--primary)'; this.style.background='white';">
+                <button type="button" id="scanBtn" class="btn btn-secondary" title="Scan QR Code" onclick="startScanner()">
+                    📸 <span class="hidden-mobile">Scan</span>
+                </button>
+            </div>
         </div>
-        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 1rem; font-size: 1.1rem; border-radius: 12px;">
+        <button type="submit" class="btn btn-primary w-full" style="padding: 1rem; font-size: 1.1rem; border-radius: 12px;">
             🚀 Extract Intelligence
         </button>
     </form>
 </div>
 
+<!-- QR Scanner Modal -->
+<div id="scannerModal" style="display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9);">
+    <div style="position: relative; max-width: 500px; margin: 2rem auto; text-align: center;">
+        <button onclick="stopScanner()" class="btn btn-danger" style="position: absolute; top: -3rem; right: 1rem; z-index: 2001;">Close X</button>
+        <div id="reader" style="width: 100%; border-radius: 12px; overflow: hidden; background: black;"></div>
+        <p class="text-muted mt-4" style="color: #cbd5e1;">Point scanning camera at the QR Code on your receipt.</p>
+    </div>
+</div>
+
+<script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+<script>
+    let html5QrcodeScanner;
+
+    function startScanner() {
+        document.getElementById('scannerModal').style.display = 'block';
+        html5QrcodeScanner = new Html5Qrcode("reader");
+        
+        const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+        
+        // Prefer back camera
+        html5QrcodeScanner.start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
+        .catch(err => {
+            console.error("Error starting scanner", err);
+            alert("Camera access failed. Please ensure you have granted permission.");
+            stopScanner();
+        });
+    }
+
+    function onScanSuccess(decodedText, decodedResult) {
+        // Handle the scanned code
+        console.log(`Scan result: ${decodedText}`, decodedResult);
+        
+        // Some QR codes are just the URL, others might be raw text. 
+        // We assume it's the URL for SEFAZ.
+        document.getElementById('url').value = decodedText;
+        
+        stopScanner();
+        
+        // Optional: Auto-submit if it looks like a valid URL
+        if (decodedText.startsWith('http')) {
+            // Slight delay for visual confirmation
+            setTimeout(() => {
+                document.getElementById('receiptForm').submit();
+            }, 500);
+        }
+    }
+
+    function onScanFailure(error) {
+        // handle scan failure, usually better to ignore and keep scanning.
+        // console.warn(`Code scan error = ${error}`);
+    }
+
+    function stopScanner() {
+        if (html5QrcodeScanner) {
+            html5QrcodeScanner.stop().then(() => {
+                document.getElementById('scannerModal').style.display = 'none';
+                html5QrcodeScanner.clear();
+            }).catch(err => {
+                console.error("Failed to stop scanner", err);
+                document.getElementById('scannerModal').style.display = 'none';
+            });
+        } else {
+            document.getElementById('scannerModal').style.display = 'none';
+        }
+    }
+</script>
+
 {% if latest_receipts %}
 <div style="max-width: 800px; margin: 0 auto;">
-    <h3 style="margin-bottom: 1.5rem; font-weight: 700; color: #475569;">Recent Activity</h3>
-    <div class="card" style="padding: 0;">
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Store</th>
-                    <th>Date</th>
-                    <th style="text-align: right;">Total</th>
-                    <th style="text-align: center;">Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in latest_receipts %}
-                <tr>
-                    <td>
-                        <strong style="color: var(--text-main); font-size: 0.9375rem;">{{ r.store.name|truncatechars:30 }}</strong><br>
-                        <small style="color: var(--text-muted);">{{ r.items_count }} items</small>
-                    </td>
-                    <td>{{ r.issue_date|date:"M d, Y" }}</td>
-                    <td style="text-align: right;"><span class="badge badge-success">R$ {{ r.total_amount|floatformat:2 }}</span></td>
-                    <td style="text-align: center;">
-                        <a href="{% url 'receipt_detail' r.id %}" class="btn btn-secondary" style="padding: 0.375rem 0.75rem; font-size: 0.8125rem;">Detail</a>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <h3 class="text-muted font-bold mb-4">Recent Activity</h3>
+    <div class="card" style="padding: 0; overflow: hidden;">
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Store</th>
+                        <th>Date</th>
+                        <th style="text-align: right;">Total</th>
+                        <th style="text-align: center;">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in latest_receipts %}
+                    <tr>
+                        <td>
+                            <strong class="text-main" style="font-size: 0.9375rem;">{{ r.store.name|truncatechars:30 }}</strong><br>
+                            <small class="text-muted">{{ r.items_count }} items</small>
+                        </td>
+                        <td>{{ r.issue_date|date:"M d, Y" }}</td>
+                        <td style="text-align: right;"><span class="badge badge-success">R$ {{ r.total_amount|floatformat:2 }}</span></td>
+                        <td style="text-align: center;">
+                            <a href="{% url 'receipt_detail' r.id %}" class="btn btn-secondary btn-sm">Detail</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 {% endif %}
 
 <!-- Duplicate Modal (SaaS Style) -->
 <div id="duplicateModal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(4px);">
-    <div class="modal-content" style="background: white; margin: 10% auto; padding: 3rem; border-radius: 20px; width: 90%; max-width: 500px; text-align: center; box-shadow: var(--shadow-lg);">
+    <div class="card" style="margin: 10% auto; padding: 3rem; border-radius: 20px; width: 90%; max-width: 500px; text-align: center; box-shadow: var(--shadow-lg);">
         <div style="font-size: 3rem; margin-bottom: 1rem;">⚖️</div>
         <h3 style="font-size: 1.5rem; font-weight: 800; color: var(--text-main); margin-bottom: 1rem;">Duplicate Entry Found</h3>
-        <p id="modalInfoText" style="color: var(--text-muted); margin-bottom: 2rem;"></p>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <p id="modalInfoText" class="text-muted" style="margin-bottom: 2rem;"></p>
+        <div class="grid grid-cols-2 gap-4">
             <button class="btn btn-secondary" onclick="closeModal()">Keep Existing</button>
             <form action="{% url 'process_nfce' %}" method="POST">
                 {% csrf_token %}
                 <input type="hidden" name="url" id="modalUrlInput">
                 <input type="hidden" name="force_update" value="true">
-                <button type="submit" class="btn btn-primary" style="width: 100%; background: var(--accent);">Re-scrape</button>
+                <button type="submit" class="btn btn-primary w-full" style="background: var(--accent); border-color: var(--accent);">Re-scrape</button>
             </form>
         </div>
     </div>

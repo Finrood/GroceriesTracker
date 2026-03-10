@@ -12,7 +12,6 @@ from django.db.models.functions import TruncMonth, ExtractWeekDay, Rank, Coalesc
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.core.cache import cache
-from django.contrib.auth.models import User
 from django.contrib.admin.views.decorators import staff_member_required
 from django_q.tasks import async_task
 from .tasks import maintenance_requeue_enrichment, async_enrich_product
@@ -129,12 +128,6 @@ def system_maintenance(request):
     
     return render(request, 'tracker/maintenance.html', {'stats': stats})
 
-def _inject_admin_context(request, context):
-    if request.user.is_staff:
-        context['all_users'] = User.objects.all().order_by('username')
-        context['selected_user_ids'] = _get_user_filter(request) or []
-    return context
-
 @login_required
 def shopping_optimizer(request):
     query = request.GET.get('q', '')
@@ -167,16 +160,16 @@ def shopping_optimizer(request):
         'optimized_list': optimized_list,
         'current_query': query
     }
-    return render(request, 'tracker/optimizer.html', _inject_admin_context(request, context))
+    return render(request, 'tracker/optimizer.html', context)
 
 @login_required
 def category_list(request):
     categories = Category.objects.prefetch_related('products').annotate(product_count=Count('products')).order_by('name')
     all_categories = Category.objects.all().order_by('name')
-    return render(request, 'tracker/category_list.html', _inject_admin_context(request, {
+    return render(request, 'tracker/category_list.html', {
         'categories': categories,
-        'all_categories': all_categories
-    }))
+        'all_categories': all_categories,
+    })
 
 @login_required
 @require_POST
@@ -265,7 +258,7 @@ def dashboard(request):
     cached_context = cache.get(cache_key)
     
     if cached_context:
-        return render(request, 'tracker/dashboard.html', _inject_admin_context(request, cached_context))
+        return render(request, 'tracker/dashboard.html', cached_context)
 
     monthly_raw = Receipt.monthly_stats(user_ids=user_ids)
     spending_labels = [item['month'].strftime('%b %Y') for item in reversed(monthly_raw)]
@@ -330,7 +323,7 @@ def dashboard(request):
         'best_value_products': best_value_products
     }
     cache.set(cache_key, context, 600)
-    return render(request, 'tracker/dashboard.html', _inject_admin_context(request, context))
+    return render(request, 'tracker/dashboard.html', context)
 
 @login_required
 def index(request):
@@ -364,7 +357,7 @@ def receipt_list(request):
     if user_ids: stores = stores.filter(receipts__user_id__in=user_ids)
     
     context = {'page_obj': page_obj, 'stores': stores, 'current_sort': sort_by, 'current_query': query, 'current_store': store_id}
-    return render(request, 'tracker/receipt_list.html', _inject_admin_context(request, context))
+    return render(request, 'tracker/receipt_list.html', context)
 
 @login_required
 @receipt_owner_required
@@ -407,7 +400,7 @@ def product_comparison(request):
     page_obj = paginator.get_page(request.GET.get('page'))
     categories = Category.objects.all().order_by('name')
     context = {'page_obj': page_obj, 'categories': categories, 'current_query': query, 'current_category': category_id, 'current_sort': sort_by}
-    return render(request, 'tracker/product_compare.html', _inject_admin_context(request, context))
+    return render(request, 'tracker/product_compare.html', context)
 
 @login_required
 def inflation_analysis(request):
@@ -446,7 +439,7 @@ def inflation_analysis(request):
         prev_price = item['avg_price']
 
     context = {'stats': reversed(stats_with_change), 'labels': json.dumps(month_labels), 'global_data': json.dumps(data), 'category_datasets': json.dumps(category_datasets)}
-    return render(request, 'tracker/inflation.html', _inject_admin_context(request, context))
+    return render(request, 'tracker/inflation.html', context)
 
 @login_required
 def product_history(request, product_id):
@@ -479,7 +472,7 @@ def product_history(request, product_id):
         'all_categories': all_categories,
         'all_products': all_products
     }
-    return render(request, 'tracker/product_history.html', _inject_admin_context(request, context))
+    return render(request, 'tracker/product_history.html', context)
 
 @login_required
 @require_POST
@@ -552,10 +545,28 @@ def _generate_receipt_diff(existing, new_data):
 # --- NEW ANALYTICS VIEWS ---
 
 @login_required
+def product_search_api(request):
+    query = request.GET.get('q', '')
+    if len(query) < 2:
+        return JsonResponse([], safe=False)
+    
+    products = Product.objects.filter(
+        Q(name__icontains=query) | Q(display_name__icontains=query)
+    ).values('id', 'name', 'display_name').distinct()[:10]
+    
+    results = []
+    for p in products:
+        results.append({
+            'id': p['id'],
+            'text': p['display_name'] or p['name']
+        })
+    return JsonResponse(results, safe=False)
+
+@login_required
 def analytics_dashboard(request):
     # Returns the new Ultimate Dashboard view
     context = {}
-    return render(request, 'tracker/analytics.html', _inject_admin_context(request, context))
+    return render(request, 'tracker/analytics.html', context)
 
 @login_required
 def smart_cart(request):
@@ -565,7 +576,7 @@ def smart_cart(request):
         optimization_result = SmartCartService.optimize_cart(request.user, shopping_list)
         context['result'] = optimization_result
         context['original_list'] = shopping_list
-    return render(request, 'tracker/smart_cart.html', _inject_admin_context(request, context))
+    return render(request, 'tracker/smart_cart.html', context)
 
 @login_required
 def api_chart_data(request):
@@ -605,8 +616,10 @@ def api_chart_data(request):
         s_list = []
         for s in suggestions:
             s_list.append({
-                'id1': s['p1'].id, 'name1': s['p1'].display_name or s['p1'].name,
-                'p2': s['p2'].display_name or s['p2'].name,
+                'id1': s['p1'].id, 
+                'name1': s['p1'].display_name or s['p1'].name,
+                'id2': s['p2'].id,
+                'name2': s['p2'].display_name or s['p2'].name,
                 'reason': s['reason']
             })
         return JsonResponse({'report': data, 'suggestions': s_list}, safe=False)

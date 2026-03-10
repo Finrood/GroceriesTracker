@@ -3,136 +3,139 @@
 {% block title %}Market Intelligence Dashboard{% endblock %}
 
 {% block content %}
-<div style="margin-bottom: 2.5rem;">
-    <h1 style="font-size: 2rem; font-weight: 800; color: #1e293b; margin-bottom: 0.25rem;">Market Intelligence.</h1>
-    <p style="color: var(--text-muted);">Advanced inflation tracking, store competitiveness, and volatility analysis.</p>
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Market Intelligence.</h1>
+        <p class="text-muted">Advanced inflation tracking, store competitiveness, and volatility analysis.</p>
+    </div>
 </div>
 
 <!-- Row 0: Budget Forecast -->
-<div id="forecastWidget" style="display: none; background: #f8fafc; border-left: 5px solid var(--secondary); padding: 1.5rem; margin-bottom: 2rem; border-radius: 8px;">
-    <div style="display: flex; justify-content: space-between; align-items: center;">
+<div id="forecastWidget" class="card" style="display: none; background: #f8fafc; border-left: 5px solid var(--secondary);">
+    <div class="flex justify-between items-center flex-wrap gap-4">
         <div>
-            <h3 style="margin: 0; color: var(--text-main); font-size: 1.1rem;">🔮 Monthly Projection</h3>
-            <p style="margin: 0.5rem 0 0; color: var(--text-muted); font-size: 0.9rem;">
+            <h3 class="card-title mb-1">🔮 Monthly Projection</h3>
+            <p class="text-muted text-sm">
                 Based on your current burn rate of <strong id="burnRate"></strong>/day.
             </p>
         </div>
-        <div style="text-align: right;">
-            <div style="font-size: 0.8rem; text-transform: uppercase; font-weight: 700; color: var(--text-muted);">Forecasted Total</div>
-            <div style="font-size: 2rem; font-weight: 800; color: var(--secondary);" id="projectedTotal">R$ 0.00</div>
+        <div class="text-right">
+            <div class="uppercase text-xs font-bold text-muted">Forecasted Total</div>
+            <div class="text-3xl font-extrabold text-secondary" id="projectedTotal" style="color: var(--secondary);">R$ 0.00</div>
         </div>
     </div>
 </div>
 
 <!-- Row 1: Geospatial/Heatmap & Volatility -->
-<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 2rem; margin-bottom: 2rem;">
-    <div class="card">
+<div class="grid grid-cols-3 gap-6 mb-8" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));">
+    <div class="card" style="grid-column: span 2;">
         <h3 class="card-title">⚖️ Store Price Index (Market Competitiveness)</h3>
-        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
-            Shows how much more or less (%) each store charges compared to the <strong>market average</strong> for the same products. 
-            <span style="color: var(--primary); font-weight: 700;">Green (Negative)</span> means savings; 
-            <span style="color: var(--danger); font-weight: 700;">Red (Positive)</span> means overpriced.
+        <p class="text-muted text-xs mb-4">
+            Shows how much more or less (%) each store charges compared to the <strong>market average</strong>. 
+            <span class="text-primary font-bold">Green (Negative)</span> means savings; 
+            <span class="text-danger font-bold">Red (Positive)</span> means overpriced.
         </p>
-        <div id="heatmapChart" style="height: 400px;"></div>
+        <div id="heatmapChart" class="skeleton" style="height: 400px;"></div>
     </div>
-    <div class="card">
+    <div class="card" style="grid-column: span 1;">
         <h3 class="card-title">💎 Competitiveness Radar</h3>
-        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
-            Compares store performance by category. A larger "shape" indicates higher prices in those specific departments. Use this to pick where to buy Meat vs. Pantry items.
+        <p class="text-muted text-xs mb-4">
+            Compares store performance by category. A larger "shape" indicates higher prices in those departments.
         </p>
-        <div id="radarChart" style="height: 400px;"></div>
+        <div id="radarChart" class="skeleton" style="height: 400px;"></div>
     </div>
 </div>
 
 <!-- Row 2: Pareto & Shrinkflation -->
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 3rem;">
-    <div class="card" style="margin-bottom: 0;">
+<div class="grid grid-cols-2 gap-6 mb-8" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));">
+    <div class="card">
         <h3 class="card-title">📊 Pareto Analysis (80/20 Rule)</h3>
-        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
-            <strong>Class A Items:</strong> These products account for 80% of your total spending. Focusing your deal-hunting efforts <em>only</em> on these items will yield the highest financial return.
+        <p class="text-muted text-xs mb-4">
+            <strong>Class A Items:</strong> account for 80% of your total spending. Focus your deal-hunting efforts here.
         </p>
-        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem;">
-            <div id="paretoChart" style="height: 300px;"></div>
-            <div id="abcPieChart" style="height: 300px;"></div>
+        <div class="grid grid-cols-3 gap-4 mb-6">
+            <div id="paretoChart" class="col-span-2 skeleton" style="height: 300px; grid-column: span 2;"></div>
+            <div id="abcPieChart" class="col-span-1 skeleton" style="height: 300px; grid-column: span 1;"></div>
         </div>
 
         <!-- Inventory Lists -->
-        <div style="margin-top: 1.5rem; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">
-            <button onclick="toggleParetoList('listA')" class="btn btn-secondary" style="font-size: 0.75rem; background: #fff7ed; border-color: #f59e0b;">📦 View Class A (<span id="countA">0</span>)</button>
-            <button onclick="toggleParetoList('listB')" class="btn btn-secondary" style="font-size: 0.75rem; background: #f5f3ff; border-color: #6366f1;">📦 View Class B (<span id="countB">0</span>)</button>
-            <button onclick="toggleParetoList('listC')" class="btn btn-secondary" style="font-size: 0.75rem; background: #f8fafc; border-color: #94a3b8;">📦 View Class C (<span id="countC">0</span>)</button>
+        <div class="flex gap-2 flex-wrap mb-4">
+            <button onclick="toggleParetoList('listA')" class="btn btn-secondary flex-1 justify-between btn-pareto-a no-loading">
+                <span>📦 Class A</span>
+                <span class="badge badge-pareto-a" id="countA">0</span>
+            </button>
+            <button onclick="toggleParetoList('listB')" class="btn btn-secondary flex-1 justify-between btn-pareto-b no-loading">
+                <span>📦 Class B</span>
+                <span class="badge badge-pareto-b" id="countB">0</span>
+            </button>
+            <button onclick="toggleParetoList('listC')" class="btn btn-secondary flex-1 justify-between btn-pareto-c no-loading">
+                <span>📦 Class C</span>
+                <span class="badge badge-pareto-c" id="countC">0</span>
+            </button>
         </div>
 
-        <div id="listA" class="pareto-list" style="display:none; margin-top: 1rem; max-height: 400px; overflow-y: auto; border: 1px solid #f59e0b; border-radius: 8px; padding: 1rem; background: white;"></div>
-        <div id="listB" class="pareto-list" style="display:none; margin-top: 1rem; max-height: 400px; overflow-y: auto; border: 1px solid #6366f1; border-radius: 8px; padding: 1rem; background: white;"></div>
-        <div id="listC" class="pareto-list" style="display:none; margin-top: 1rem; max-height: 400px; overflow-y: auto; border: 1px solid #94a3b8; border-radius: 8px; padding: 1rem; background: white;"></div>
+        <div id="listA" class="pareto-list card mb-0 bg-white" style="display:none; max-height: 400px; overflow-y: auto; border-color: #f59e0b;"></div>
+        <div id="listB" class="pareto-list card mb-0 bg-white" style="display:none; max-height: 400px; overflow-y: auto; border-color: #6366f1;"></div>
+        <div id="listC" class="pareto-list card mb-0 bg-white" style="display:none; max-height: 400px; overflow-y: auto; border-color: #94a3b8;"></div>
     </div>
     
-    <div class="card" style="margin-bottom: 0;">
-        <h3 class="card-title">📉 Shrinkflation Report</h3>
-        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
-            Identifies products where the manufacturer reduced the volume (g/ml) over time. The <strong>Hike</strong> percentage shows the real unit-price increase caused by the smaller size.
-        </p>
-        
-        <div id="suggestionsArea" style="display:none; margin-bottom: 1.5rem; border: 1px solid #bae6fd; background: #f0f9ff; padding: 1rem; border-radius: 8px;">
-            <h4 style="font-size: 0.8rem; color: #0369a1; margin-bottom: 0.5rem;">🧠 AI Variant Suggestions</h4>
-            <div id="suggestionList"></div>
-        </div>
+    <div class="flex flex-col gap-6">
+        <div class="card mb-0">
+            <h3 class="card-title">📉 Shrinkflation Report</h3>
+            <p class="text-muted text-xs mb-4">
+                Identifies products where volume was reduced over time. The <strong>Hike</strong> shows the real price increase.
+            </p>
+            
+            <div id="suggestionsArea" class="p-4 rounded-lg mb-4" style="display:none; border: 1px solid #bae6fd; background: #f0f9ff;">
+                <h4 class="text-xs font-bold mb-2 uppercase" style="color: #0369a1;">🧠 AI Variant Suggestions</h4>
+                <div id="suggestionList"></div>
+            </div>
 
-        <div id="shrinkReport" style="max-height: 300px; overflow-y: auto;">
-            <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
-                Analyzing variant deltas...
+            <div id="shrinkReport" class="table-responsive" style="max-height: 300px;">
+                <div class="text-center py-8 text-muted">Analyzing variant deltas...</div>
             </div>
         </div>
-    </div>
-    
-    <div class="card" style="margin-bottom: 0;">
-        <h3 class="card-title">📉 Basket Price Drift</h3>
-        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
-            Cost change for your 10 most common items compared to the previous trip at each store.
-        </p>
-        <div id="driftContainer" style="display: flex; flex-direction: column; gap: 0.75rem;">
-            <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
-                Analyzing store trends...
+
+        <div class="card mb-0">
+            <h3 class="card-title">📉 Basket Price Drift</h3>
+            <p class="text-muted text-xs mb-4">
+                Cost change for your 10 most common items compared to previous trips.
+            </p>
+            <div id="driftContainer" class="flex flex-col gap-3">
+                <div class="text-center py-8 text-muted">Analyzing store trends...</div>
             </div>
         </div>
     </div>
 </div>
 
 <!-- Row 3: Health & Wellness -->
-<div style="margin-bottom: 3rem;">
-    <h3 class="card-title" style="margin-bottom: 1.5rem;">🧘 Health & Wellness Dashboard</h3>
-    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2rem;">
-        <div class="card" style="margin-bottom: 0;">
-            <h4 style="font-size: 0.9rem; font-weight: 700; color: var(--text-muted); margin-bottom: 1rem; text-transform: uppercase;">Processing Level (NOVA)</h4>
-            <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">
-                Classification of food processing. <strong>Group 4</strong> is ultra-processed. Aim for more Group 1 & 2.
-            </p>
-            <div id="novaChart" style="height: 250px;"></div>
+<div class="mb-12">
+    <h3 class="card-title mb-6">🧘 Health & Wellness Dashboard</h3>
+    <div class="grid grid-cols-3 gap-6" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
+        <div class="card mb-0">
+            <h4 class="uppercase text-xs font-bold text-muted mb-4">Processing Level (NOVA)</h4>
+            <p class="text-muted text-xs mb-4">Classification of food processing. Group 4 is ultra-processed.</p>
+            <div id="novaChart" class="skeleton" style="height: 250px;"></div>
         </div>
-        <div class="card" style="margin-bottom: 0;">
-            <h4 style="font-size: 0.9rem; font-weight: 700; color: var(--text-muted); margin-bottom: 1rem; text-transform: uppercase;">Pantry Nutritional Density</h4>
-            <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">
-                Average grams of Sugar, Salt, and Fat per 100g across your entire purchased inventory.
-            </p>
-            <div id="nutrientChart" style="height: 250px;"></div>
+        <div class="card mb-0">
+            <h4 class="uppercase text-xs font-bold text-muted mb-4">Pantry Nutritional Density</h4>
+            <p class="text-muted text-xs mb-4">Avg grams of Sugar, Salt, and Fat per 100g in your inventory.</p>
+            <div id="nutrientChart" class="skeleton" style="height: 250px;"></div>
         </div>
-        <div class="card" style="margin-bottom: 0;">
-            <h4 style="font-size: 0.9rem; font-weight: 700; color: var(--text-muted); margin-bottom: 1rem; text-transform: uppercase;">Environmental Impact</h4>
-            <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">
-                Distribution of Eco-Score grades. From <strong>A (Low impact)</strong> to <strong>E (High impact)</strong>.
-            </p>
-            <div id="ecoChart" style="height: 250px;"></div>
+        <div class="card mb-0">
+            <h4 class="uppercase text-xs font-bold text-muted mb-4">Environmental Impact</h4>
+            <p class="text-muted text-xs mb-4">Distribution of Eco-Score grades. From A (Low) to E (High).</p>
+            <div id="ecoChart" class="skeleton" style="height: 250px;"></div>
         </div>
     </div>
     
     <!-- Drill-down Explorer -->
-    <div id="healthExplorer" class="card" style="display: none; margin-top: 2rem; border-top: 5px solid var(--primary); background: #fdfdfd;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-            <h3 id="explorerTitle" style="margin: 0; font-size: 1.1rem; color: #1e293b;">🕵️ Category Explorer</h3>
-            <button onclick="document.getElementById('healthExplorer').style.display='none'" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.7rem;">Close</button>
+    <div id="healthExplorer" class="card mt-8" style="display: none; border-top: 5px solid var(--primary); background: #fdfdfd;">
+        <div class="flex justify-between items-center mb-6">
+            <h3 id="explorerTitle" class="card-title mb-0">🕵️ Category Explorer</h3>
+            <button onclick="document.getElementById('healthExplorer').style.display='none'" class="btn btn-secondary btn-sm">Close</button>
         </div>
-        <div id="explorerList" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 1rem;">
+        <div id="explorerList" class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));">
             <!-- Items populated by JS -->
         </div>
     </div>
@@ -140,6 +143,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
 <script>
+    // (Existing JS logic remains the same, but ensure it works with new ID classes if needed)
     // --- Heatmap Initialization ---
     const heatmapChart = echarts.init(document.getElementById('heatmapChart'));
     heatmapChart.showLoading();
@@ -148,6 +152,7 @@
         .then(response => response.json())
         .then(res => {
             heatmapChart.hideLoading();
+            document.getElementById('heatmapChart').classList.remove('skeleton');
             const data = res.data;
             if (!data || data.length === 0) {
                 document.getElementById('heatmapChart').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">No volatility data for the last 30 days.</div>';
@@ -169,7 +174,7 @@
             grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
             xAxis: { 
                 type: 'value', 
-                name: '% vs Average',
+                name: '% vs Avg',
                 axisLabel: { formatter: '{value}%' }
             },
             yAxis: { type: 'category', data: data.map(i => i.name) },
@@ -197,6 +202,7 @@
         .then(response => response.json())
         .then(res => {
             radarChart.hideLoading();
+            document.getElementById('radarChart').classList.remove('skeleton');
             if (!res.indicators || res.indicators.length === 0) {
                 document.getElementById('radarChart').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Insufficient category data.</div>';
                 return;
@@ -236,6 +242,9 @@
         radarChart.resize();
         paretoChart.resize();
         abcPieChart.resize();
+        novaChart.resize();
+        nutrientChart.resize();
+        ecoChart.resize();
     });
 
     // --- Forecast Logic ---
@@ -260,6 +269,8 @@
         .then(res => {
             paretoChart.hideLoading();
             abcPieChart.hideLoading();
+            document.getElementById('paretoChart').classList.remove('skeleton');
+            document.getElementById('abcPieChart').classList.remove('skeleton');
             if (res.a_items.length === 0) {
                 document.getElementById('paretoChart').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Insufficient data for Pareto Analysis.</div>';
                 return;
@@ -276,7 +287,7 @@
                     data: xData, 
                     axisLabel: { interval: 0, rotate: 30, fontSize: 10 } 
                 },
-                yAxis: { type: 'value', name: 'Total Spend (R$)' },
+                yAxis: { type: 'value', name: 'Spend (R$)' },
                 series: [{
                     name: 'Total Spend',
                     type: 'bar',
@@ -286,7 +297,6 @@
                 }]
             });
 
-            // ABC Distribution Pie
             abcPieChart.setOption({
                 tooltip: { trigger: 'item', formatter: '{b}: R$ {c} ({d}%)' },
                 legend: { show: false },
@@ -303,19 +313,18 @@
                 }]
             });
 
-            // Populate Lists
             document.getElementById('countA').innerText = res.a_count;
             document.getElementById('countB').innerText = res.b_count;
             document.getElementById('countC').innerText = res.c_count;
 
             const renderList = (id, items) => {
                 const div = document.getElementById(id);
-                if (items.length === 0) { div.innerHTML = '<em>No items in this class</em>'; return; }
-                let html = '<table class="table" style="font-size: 0.75rem;"><thead><tr><th>Product</th><th>Total Spend</th></tr></thead><tbody>';
+                if (items.length === 0) { div.innerHTML = '<em class="p-4 block">No items in this class</em>'; return; }
+                let html = '<div class="table-responsive"><table class="table" style="font-size: 0.75rem;"><thead><tr><th>Product</th><th style="text-align:right;">Spend</th></tr></thead><tbody>';
                 items.forEach(i => {
-                    html += `<tr><td>${i.name}</td><td><strong>R$ ${i.spend.toFixed(2)}</strong></td></tr>`;
+                    html += `<tr><td>${i.name}</td><td style="text-align:right;"><strong>R$ ${i.spend.toFixed(2)}</strong></td></tr>`;
                 });
-                html += '</tbody></table>';
+                html += '</tbody></table></div>';
                 div.innerHTML = html;
             };
 
@@ -339,27 +348,25 @@
             const container = document.getElementById('shrinkReport');
             const suggestions = document.getElementById('suggestionList');
             
-            // 1. Handle Suggestions
             if (res.suggestions && res.suggestions.length > 0) {
                 document.getElementById('suggestionsArea').style.display = 'block';
                 let sHtml = '';
                 res.suggestions.forEach(s => {
-                    sHtml += `<div style="font-size: 0.75rem; display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #bae6fd;">
+                    sHtml += `<div class="flex justify-between items-center py-2 border-b border-blue-100" style="font-size: 0.75rem;">
                         <span>Link <strong>${s.name1}</strong> to <strong>${s.name2}</strong>?</span>
                         <form action="{% url 'link_product_variant' %}" method="POST" style="display:inline;">
                             {% csrf_token %}
                             <input type="hidden" name="child_id" value="${s.id1}">
                             <input type="hidden" name="parent_id" value="${s.id2}">
-                            <button type="submit" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.65rem;">Link</button>
+                            <button type="submit" class="btn btn-secondary btn-sm" style="padding: 2px 6px; font-size: 0.65rem;">Link</button>
                         </form>
                     </div>`;
                 });
                 suggestions.innerHTML = sHtml;
             }
 
-            // 2. Handle Report
             if (!res.report || res.report.length === 0) {
-                container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted);">No shrinkflation detected in your variants yet.</div>';
+                container.innerHTML = '<div class="text-center py-8 text-muted">No shrinkflation detected.</div>';
                 return;
             }
             
@@ -369,10 +376,10 @@
                 const impactText = item.cost_impact > 0 ? `+${item.cost_impact}% Hike` : `${item.cost_impact}% Saving`;
                 
                 html += `<tr>
-                    <td><strong>${item.master}</strong><br><small>${item.old_weight}g → ${item.new_weight}g</small></td>
+                    <td><strong class="text-main">${item.master}</strong><br><small class="text-muted">${item.old_weight}g → ${item.new_weight}g</small></td>
                     <td style="text-align:right;">
-                        <span class="badge badge-danger" style="margin-bottom:4px;">-${item.shrink_pct}% Size</span><br>
-                        <small style="color:${impactColor}; font-weight:700;">${impactText} (per unit)</small>
+                        <span class="badge badge-danger mb-1">-${item.shrink_pct}% Size</span><br>
+                        <small style="color:${impactColor}; font-weight:700;">${impactText}</small>
                     </td>
                 </tr>`;
             });
@@ -388,16 +395,18 @@
     fetch('{% url "api_chart_data" %}?type=health')
         .then(response => response.json())
         .then(res => {
+            document.getElementById('novaChart').classList.remove('skeleton');
+            document.getElementById('nutrientChart').classList.remove('skeleton');
+            document.getElementById('ecoChart').classList.remove('skeleton');
             const showExplorer = (title, items) => {
                 const ex = document.getElementById('healthExplorer');
                 const list = document.getElementById('explorerList');
                 document.getElementById('explorerTitle').innerText = '🕵️ Products in ' + title;
                 ex.style.display = 'block';
-                list.innerHTML = items.length ? items.map(i => `<div style="background:white; padding:0.75rem; border:1px solid #e2e8f0; border-radius:8px; font-size:0.8rem; font-weight:600;">${i}</div>`).join('') : '<p>No products in this category.</p>';
+                list.innerHTML = items.length ? items.map(i => `<div class="p-3 bg-white border border-gray-200 rounded-lg text-sm font-bold shadow-sm">${i}</div>`).join('') : '<p>No products found.</p>';
                 ex.scrollIntoView({ behavior: 'smooth' });
             };
 
-            // 1. NOVA Pie
             novaChart.setOption({
                 tooltip: { trigger: 'item' },
                 series: [{
@@ -414,7 +423,6 @@
             });
             novaChart.on('click', (p) => showExplorer('NOVA Group ' + p.name, res.nova[p.name].items));
 
-            // 2. Nutrients Bar
             nutrientChart.setOption({
                 tooltip: { trigger: 'axis' },
                 xAxis: { type: 'category', data: ['Sugar', 'Salt', 'Fat'] },
@@ -430,7 +438,6 @@
                 }]
             });
 
-            // 3. Eco Score Gauge
             const ecoData = [
                 { value: res.eco.a.count, name: 'a', itemStyle: { color: '#15803d' } },
                 { value: res.eco.b.count, name: 'b', itemStyle: { color: '#16a34a' } },
@@ -451,13 +458,12 @@
             ecoChart.on('click', (p) => showExplorer('Eco-Score ' + p.name.toUpperCase(), res.eco[p.name].items));
         });
 
-    // --- Budget Drift Logic ---
     fetch('{% url "api_chart_data" %}?type=drift')
         .then(response => response.json())
         .then(res => {
             const container = document.getElementById('driftContainer');
             if (!res || res.length === 0) {
-                container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted);">Not enough repeat visits to calculate drift.</div>';
+                container.innerHTML = '<div class="text-center py-8 text-muted">Not enough data for drift.</div>';
                 return;
             }
             
@@ -467,28 +473,18 @@
                 const icon = item.status === 'up' ? '📈' : item.status === 'down' ? '📉' : '➖';
                 const sign = item.status === 'up' ? '+' : '';
                 
-                html += `<div style="display: flex; justify-content: space-between; align-items: center; background: white; padding: 1rem; border-radius: 8px; border: 1px solid var(--border);">
+                html += `<div class="flex justify-between items-center bg-white p-4 rounded-lg border border-gray-100 shadow-sm">
                     <div>
-                        <strong style="font-size: 0.9rem;">${item.store}</strong>
-                        <div style="font-size: 0.75rem; color: var(--text-muted);">Standard 10-item basket</div>
+                        <strong class="text-sm">${item.store}</strong>
+                        <div class="text-xs text-muted">10-item basket</div>
                     </div>
-                    <div style="text-align: right;">
+                    <div class="text-right">
                         <div style="color: ${color}; font-weight: 800; font-size: 1rem;">${icon} ${sign}${item.pct}%</div>
-                        <small style="color: var(--text-muted); font-size: 0.7rem;">${sign}R$ ${item.diff.toFixed(2)} total</small>
+                        <small class="text-muted text-xs">${sign}R$ ${item.diff.toFixed(2)} total</small>
                     </div>
                 </div>`;
             });
             container.innerHTML = html;
         });
-
-    window.addEventListener('resize', () => {
-        heatmapChart.resize();
-        radarChart.resize();
-        paretoChart.resize();
-        abcPieChart.resize();
-        novaChart.resize();
-        nutrientChart.resize();
-        ecoChart.resize();
-    });
 </script>
 {% endblock %}

@@ -9,6 +9,7 @@ urlpatterns = [
     path('analytics/', views.analytics_dashboard, name='analytics_dashboard'),
     path('smart-cart/', views.smart_cart, name='smart_cart'),
     path('api/charts/', views.api_chart_data, name='api_chart_data'),
+    path('api/products/search/', views.product_search_api, name='product_search_api'),
     path('categories/', views.category_list, name='category_list'),
     path('categories/add/', views.category_create, name='category_create'),
     path('categories/update/', views.category_update, name='category_update'),
