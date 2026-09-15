@@ -108,6 +108,40 @@
     </div>
 </div>
 
+<!-- Row: Price Movers, Buy Signals, Basket Over Time -->
+<div class="mb-12">
+    <div class="grid grid-cols-3 gap-6" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
+        <div class="card mb-0">
+            <h3 class="card-title">🚀 Biggest Risers <span class="text-muted text-xs">(30d vs prior 60d)</span></h3>
+            <p class="text-muted text-xs mb-4">Canonical buckets, per-kg/L normalized.</p>
+            <div id="risersContainer" class="flex flex-col gap-3">
+                <div class="text-center py-8 text-muted">Loading movers...</div>
+            </div>
+        </div>
+        <div class="card mb-0">
+            <h3 class="card-title">📉 Biggest Fallers <span class="text-muted text-xs">(30d vs prior 60d)</span></h3>
+            <p class="text-muted text-xs mb-4">Prices cooling off — good time to buy.</p>
+            <div id="fallersContainer" class="flex flex-col gap-3">
+                <div class="text-center py-8 text-muted">Loading movers...</div>
+            </div>
+        </div>
+        <div class="card mb-0">
+            <h3 class="card-title">🛒 Stock Up Now</h3>
+            <p class="text-muted text-xs mb-4">Staples at or near their 12-month low.</p>
+            <div id="signalsContainer" class="flex flex-col gap-3">
+                <div class="text-center py-8 text-muted">Scanning lows...</div>
+            </div>
+        </div>
+    </div>
+    <div class="card mt-6 mb-0">
+        <h3 class="card-title">🧺 Standard Basket Over Time</h3>
+        <p class="text-muted text-xs mb-4">Monthly cost of your 10 most-bought buckets (per-kg/L avg; coverage = buckets with data).</p>
+        <div id="basketContainer" class="flex flex-col gap-2">
+            <div class="text-center py-8 text-muted">Building basket history...</div>
+        </div>
+    </div>
+</div>
+
 <!-- Row 3: Health & Wellness -->
 <div class="mb-12">
     <h3 class="card-title mb-6">🧘 Health & Wellness Dashboard</h3>
@@ -466,13 +500,13 @@
                 container.innerHTML = '<div class="text-center py-8 text-muted">Not enough data for drift.</div>';
                 return;
             }
-            
+
             let html = '';
             res.forEach(item => {
                 const color = item.status === 'up' ? '#ef4444' : item.status === 'down' ? '#10b981' : '#94a3b8';
                 const icon = item.status === 'up' ? '📈' : item.status === 'down' ? '📉' : '➖';
                 const sign = item.status === 'up' ? '+' : '';
-                
+
                 html += `<div class="flex justify-between items-center bg-white p-4 rounded-lg border border-gray-100 shadow-sm">
                     <div>
                         <strong class="text-sm">${item.store}</strong>
@@ -485,6 +519,70 @@
                 </div>`;
             });
             container.innerHTML = html;
+        });
+
+    function moverRow(m, up) {
+        const color = up ? '#ef4444' : '#10b981';
+        const sign = m.pct > 0 ? '+' : '';
+        const thin = (m.n_recent + m.n_base) < 4 ? ' <span class="text-xs text-muted" title="Few data points">· thin</span>' : '';
+        return `<div class="flex justify-between items-center bg-white p-3 rounded-lg border border-gray-100 shadow-sm">
+            <div><strong class="text-sm">${m.name}</strong>
+            <div class="text-xs text-muted">R$ ${m.recent} vs R$ ${m.baseline}${thin}</div></div>
+            <div style="color: ${color}; font-weight: 800;">${sign}${m.pct}%</div>
+        </div>`;
+    }
+
+    fetch('{% url "api_chart_data" %}?type=movers')
+        .then(response => response.json())
+        .then(res => {
+            const r = document.getElementById('risersContainer');
+            const f = document.getElementById('fallersContainer');
+            r.innerHTML = (res.risers && res.risers.length)
+                ? res.risers.map(m => moverRow(m, true)).join('')
+                : '<div class="text-center py-8 text-muted">No risers.</div>';
+            f.innerHTML = (res.fallers && res.fallers.length)
+                ? res.fallers.map(m => moverRow(m, false)).join('')
+                : '<div class="text-center py-8 text-muted">No fallers.</div>';
+        });
+
+    fetch('{% url "api_chart_data" %}?type=signals')
+        .then(response => response.json())
+        .then(res => {
+            const c = document.getElementById('signalsContainer');
+            if (!res || !res.length) {
+                c.innerHTML = '<div class="text-center py-8 text-muted">Nothing at a low right now.</div>';
+                return;
+            }
+            c.innerHTML = res.map(s =>
+                `<div class="flex justify-between items-center bg-white p-3 rounded-lg border border-gray-100 shadow-sm">
+                    <div><strong class="text-sm">${s.name}</strong>
+                    <div class="text-xs text-muted">Low R$ ${s.low} · avg R$ ${s.avg} · ${s.last_date}</div></div>
+                    <div style="color: #10b981; font-weight: 800;">R$ ${s.latest}</div>
+                </div>`).join('');
+        });
+
+    fetch('{% url "api_chart_data" %}?type=basket')
+        .then(response => response.json())
+        .then(res => {
+            const c = document.getElementById('basketContainer');
+            if (!res || !res.totals || !res.totals.length) {
+                c.innerHTML = '<div class="text-center py-8 text-muted">Not enough history.</div>';
+                return;
+            }
+            const max = Math.max(...res.totals, 1);
+            let html = '';
+            res.labels.forEach((label, i) => {
+                const pct = Math.round((res.totals[i] / max) * 100);
+                const cov = res.coverage ? ` <span class="text-xs text-muted">(${res.coverage[i]}/${res.basket_size})</span>` : '';
+                html += `<div class="flex items-center gap-3">
+                    <div class="text-xs text-muted" style="width: 70px;">${label}</div>
+                    <div style="flex: 1; background: #f1f5f9; border-radius: 6px; height: 18px;">
+                        <div style="width: ${pct}%; background: var(--primary); border-radius: 6px; height: 18px;"></div>
+                    </div>
+                    <div class="text-sm" style="font-weight: 700; min-width: 90px; text-align: right;">R$ ${res.totals[i].toFixed(2)}${cov}</div>
+                </div>`;
+            });
+            c.innerHTML = html;
         });
 </script>
 {% endblock %}

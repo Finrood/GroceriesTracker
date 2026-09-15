@@ -764,8 +764,132 @@ class AnalyticsService:
                     'pct': round(pct, 1),
                     'status': 'up' if diff > 0 else 'down' if diff < 0 else 'stable'
                 })
-        
+
         return drift_report
+
+    # ---------- Pack: movers, buy signals, basket over time ----------
+
+    @staticmethod
+    def _bucket_rows(user, since=None):
+        """PriceHistory rows grouped by canonical bucket (fallback: product).
+
+        Returns {key: {'label': str, 'prices': [(date, normalized), ...]}}.
+        Normalized-only: buckets without a single normalized value are dropped.
+        """
+        qs = PriceHistory.objects.filter(user=user).select_related(
+            'product', 'product__canonical')
+        if since is not None:
+            qs = qs.filter(date__gte=since)
+        buckets = {}
+        for r in qs.order_by('date'):
+            p = r.product
+            if r.normalized_price is None:
+                continue
+            key = f"c{p.canonical_id}" if p.canonical_id else f"p{p.id}"
+            b = buckets.get(key)
+            if b is None:
+                b = buckets[key] = {'label': p.display_name or p.name,
+                                    'prices': []}
+            b['prices'].append((r.date, float(r.normalized_price)))
+            label = p.display_name or p.name
+            if len(label) < len(b['label']):
+                b['label'] = label
+        return buckets
+
+    @staticmethod
+    def get_price_movers(user, recent_days=30, baseline_days=60, limit=5):
+        """Biggest risers/fallers: recent-window avg vs preceding baseline avg.
+
+        Canonical-aware, normalized (per-kg/L) prices. A bucket needs at least
+        one point on each side; counts are returned so the UI can flag thin
+        evidence.
+        """
+        now = timezone.now()
+        buckets = AnalyticsService._bucket_rows(user, since=now - timedelta(
+            days=recent_days + baseline_days))
+        split = now - timedelta(days=recent_days)
+        movers = []
+        for key, b in buckets.items():
+            base = [v for d, v in b['prices'] if d < split]
+            recent = [v for d, v in b['prices'] if d >= split]
+            if not base or not recent or sum(base) <= 0:
+                continue
+            base_avg = sum(base) / len(base)
+            recent_avg = sum(recent) / len(recent)
+            pct = ((recent_avg - base_avg) / base_avg) * 100
+            movers.append({
+                'name': b['label'],
+                'pct': round(pct, 1),
+                'recent': round(recent_avg, 2),
+                'baseline': round(base_avg, 2),
+                'n_recent': len(recent),
+                'n_base': len(base),
+            })
+        movers.sort(key=lambda m: m['pct'])
+        return {'fallers': movers[:limit],
+                'risers': list(reversed(movers[-limit:]))}
+
+    @staticmethod
+    def get_buy_signals(user, lookback_days=365, staples=20):
+        """Staples at/near their 12-month low: latest <= min * 1.02."""
+        now = timezone.now()
+        buckets = AnalyticsService._bucket_rows(
+            user, since=now - timedelta(days=lookback_days))
+        ranked = sorted(buckets.items(), key=lambda kv: -len(kv[1]['prices']))
+        signals = []
+        for key, b in ranked[:staples]:
+            if len(b['prices']) < 3:
+                continue
+            vals = [v for _, v in b['prices']]
+            low = min(vals)
+            latest = vals[-1]
+            avg = sum(vals) / len(vals)
+            if low > 0 and latest <= low * 1.02:
+                signals.append({
+                    'name': b['label'],
+                    'latest': round(latest, 2),
+                    'low': round(low, 2),
+                    'avg': round(avg, 2),
+                    'vs_avg': round(((latest - avg) / avg) * 100, 1) if avg else 0,
+                    'last_date': b['prices'][-1][0].strftime('%Y-%m-%d'),
+                })
+        signals.sort(key=lambda s: s['vs_avg'])
+        return signals
+
+    @staticmethod
+    def get_basket_over_time(user, months=12, top_n=10):
+        """Monthly cost of the standard basket (top-N buckets by frequency).
+
+        Total sums only buckets with data that month; coverage reports how
+        many of the N were present, so thin months read honestly.
+        """
+        buckets = AnalyticsService._bucket_rows(user)
+        top = sorted(buckets.items(), key=lambda kv: -len(kv[1]['prices']))[:top_n]
+        top_keys = {k for k, _ in top}
+        now = timezone.now()
+        starts = []
+        cursor = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        for _ in range(months):
+            starts.append(cursor)
+            cursor = (cursor - timedelta(days=1)).replace(day=1)
+        starts.reverse()
+        labels, totals, coverage = [], [], []
+        for start in starts:
+            if start.month == 12:
+                end = start.replace(year=start.year + 1, month=1)
+            else:
+                end = start.replace(month=start.month + 1)
+            total, hit = 0.0, 0
+            for key in top_keys:
+                vals = [v for d, v in buckets[key]['prices'] if start <= d < end]
+                if vals:
+                    total += sum(vals) / len(vals)
+                    hit += 1
+            labels.append(start.strftime('%b %Y'))
+            totals.append(round(total, 2))
+            coverage.append(hit)
+        return {'labels': labels, 'totals': totals, 'coverage': coverage,
+                'basket_size': len(top_keys)}
 
 class SmartCartService:
     @staticmethod

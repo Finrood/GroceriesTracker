@@ -1215,3 +1215,72 @@ class SmartCartMatchingTests(TestCase):
         self.assertEqual(match.id, fresh.id)
         # An unmatched line yields None
         self.assertIsNone(SmartCartService._match_row('zzz unobtainium'))
+
+
+class MoversSignalsBasketTests(TestCase):
+    def setUp(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        from tracker.models import CanonicalProduct
+        self.user = User.objects.create_user(username='metrics1', password='p')
+        self.store = Store.objects.create(name="S", cnpj="11111111000111")
+        self.now = tz.now()
+        self.canon = CanonicalProduct.objects.create(name="Riser")
+        self.riser = Product.objects.create(name="RISER PROD", canonical=self.canon)
+        self.faller = Product.objects.create(name="FALLER PROD")
+        self.D = D
+
+    def _ph(self, product, days_ago, price):
+        PriceHistory.objects.create(user=self.user, product=product, store=self.store,
+                                    date=self.now - timedelta(days=days_ago),
+                                    unit_price=self.D(str(price)),
+                                    normalized_price=self.D(str(price)))
+
+    def test_movers_detects_rise_and_fall(self):
+        for d in (80, 70, 60):
+            self._ph(self.riser, d, 10)
+        for d in (10, 5, 1):
+            self._ph(self.riser, d, 15)  # +50%
+        for d in (80, 70):
+            self._ph(self.faller, d, 20)
+        for d in (10, 5):
+            self._ph(self.faller, d, 10)  # -50%
+        # A bucket with only recent data is skipped (no baseline)
+        fresh = Product.objects.create(name="FRESH ONLY")
+        self._ph(fresh, 2, 99)
+        res = AnalyticsService.get_price_movers(self.user)
+        self.assertEqual(res['risers'][0]['name'], 'RISER PROD')
+        self.assertEqual(res['risers'][0]['pct'], 50.0)
+        self.assertEqual(res['fallers'][0]['name'], 'FALLER PROD')
+        self.assertEqual(res['fallers'][0]['pct'], -50.0)
+        self.assertNotIn('FRESH ONLY', [m['name'] for m in res['risers'] + res['fallers']])
+
+    def test_movers_empty_for_new_user(self):
+        other = User.objects.create_user(username='metrics_new', password='p')
+        res = AnalyticsService.get_price_movers(other)
+        self.assertEqual(res, {'fallers': [], 'risers': []})
+
+    def test_buy_signals_flags_lows_only(self):
+        for i, price in enumerate([10, 12, 11, 13, 10]):
+            self._ph(self.riser, 300 - i * 30, price)
+        self._ph(self.riser, 1, 10)  # back at the low
+        self._ph(self.faller, 200, 20)
+        self._ph(self.faller, 100, 22)
+        self._ph(self.faller, 1, 25)  # climbing, not a low
+        res = AnalyticsService.get_buy_signals(self.user)
+        names = [s['name'] for s in res]
+        self.assertIn('RISER PROD', names)
+        self.assertNotIn('FALLER PROD', names)
+        sig = next(s for s in res if s['name'] == 'RISER PROD')
+        self.assertEqual(sig['low'], 10.0)
+        self.assertRegex(sig['last_date'], r'^\d{4}-\d{2}-\d{2}$')
+
+    def test_basket_over_time_shape(self):
+        self._ph(self.riser, 5, 10)
+        self._ph(self.faller, 40, 20)
+        res = AnalyticsService.get_basket_over_time(self.user, months=3, top_n=10)
+        self.assertEqual(len(res['labels']), 3)
+        self.assertEqual(len(res['totals']), 3)
+        self.assertEqual(len(res['coverage']), 3)
+        self.assertEqual(res['basket_size'], 2)
+        self.assertGreater(res['totals'][-1], 0)  # current month has the riser
