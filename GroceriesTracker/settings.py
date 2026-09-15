@@ -182,17 +182,16 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
         'OPTIONS': {
             'timeout': 60, # Extreme patience for SQLite locks
-            'init_command': 'PRAGMA busy_timeout=60000;',
-            # NOTE: journal_mode MUST stay at SQLite's default (delete/rollback).
-            # This compose file bind-mounts db.sqlite3 as a *single file* while
-            # web and worker are separate containers, so WAL mode gives each
-            # container its own private -wal/-shm sidecars in the container
-            # layer -> the worker silently cannot see the web container's
-            # writes (split brain). Rollback journal lives inside the single
-            # shared file and is safe for this topology.
-            # busy_timeout makes writers WAIT for the lock instead of throwing
-            # 'database is locked' (97 of them in one maintenance run when web
-            # + worker wrote concurrently). Does NOT affect journal mode.
+            # WAL mode. HISTORY: with WAL + single-file bind mounts, each
+            # container got private -wal/-shm sidecars -> split brain (worker
+            # couldn't see web's writes). That is fixed: compose now mounts the
+            # whole project dir, so the sidecar files are shared by all
+            # processes and WAL is safe AND desirable here: readers (gunicorn)
+            # never block the writer (qcluster) and vice versa.
+            # busy_timeout (60s) serializes the remaining writer-vs-writer
+            # collisions; note SQLite bypasses the busy handler on read->write
+            # lock upgrades, which only matters in rollback-journal mode.
+            'init_command': 'PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=60000;',
         }
     }
 }
