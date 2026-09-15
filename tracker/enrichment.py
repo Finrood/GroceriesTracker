@@ -43,14 +43,31 @@ class ProductEnrichmentService:
         try:
             response = requests.get(product.image_url, headers=ProductEnrichmentService._get_headers(), timeout=15)
             if response.status_code == 200:
-                content_size = len(response.content)
-                if content_size < 5120: return False
+                content = response.content
+                content_size = len(content)
+                if content_size < 5120 or content_size > 10 * 1024 * 1024:
+                    return False
+                # Validate the payload is a real image before serving it from
+                # our origin: a scraped "image" URL can return HTML/JS, which
+                # would otherwise be stored as products/x.jpg (stored XSS).
+                from io import BytesIO
+                from PIL import Image
+                try:
+                    img = Image.open(BytesIO(content))
+                    img.verify()
+                except Exception:
+                    logger.warning(f"Rejected non-image payload for product {product.id} from {product.image_url[:100]}")
+                    return False
+                ctype = response.headers.get('Content-Type', '')
+                if ctype and not ctype.startswith('image/'):
+                    return False
                 ext = product.image_url.split('.')[-1].split('?')[0][:4]
                 if len(ext) > 4 or '/' in ext: ext = 'jpg'
                 filename = f"{product.code_gtin or product.id}.{ext}"
-                product.local_image.save(filename, ContentFile(response.content), save=True)
+                product.local_image.save(filename, ContentFile(content), save=True)
                 return True
-        except: pass
+        except Exception:
+            logger.exception(f"Image download failed for product {product.id}")
         return False
 
     @staticmethod

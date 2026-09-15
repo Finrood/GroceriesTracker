@@ -70,6 +70,18 @@ docker-compose up --build
 *   **Web:** Accessible at `http://localhost:8000`
 *   **Worker:** Automatically starts and handles background product enrichment and data processing.
 
+### Production Notes (Cloudflare Tunnel / reverse proxy)
+The stack ships production-ready defaults for running behind a TLS-terminating proxy:
+*   **Gunicorn + WhiteNoise** serve the app and hashed static files (no nginx needed).
+*   **Media files** are served by Django itself (`django.views.static.serve`), because the enrichment worker writes new product images while the app is running.
+*   `SECURE_PROXY_SSL_HEADER` trusts the proxy's `X-Forwarded-Proto`; cookies, HSTS, and `SECURE_SSL_REDIRECT` are all env-tunable (see `.env.example`).
+*   SQLite runs in **WAL mode** with a 60s busy timeout; `db.sqlite3`, `media/` and `staticfiles/` are bind-mounted volumes.
+*   Never bake `.env` or `db.sqlite3` into the image — both are excluded via `.dockerignore`.
+
+### Data integrity invariants
+*   A receipt is uniquely identified per user by its 44-digit NFCe **access key** (DB-enforced); re-submitting the same NFCe is a no-op, not a duplicate.
+*   `PriceHistory` rows are linked to their `Receipt` and cascade on delete, so refreshing or removing a receipt leaves no ghost data. `python manage.py backfill_history` rebuilds the whole table from `ReceiptItem`s if ever needed.
+
 ---
 
 ## 🛠️ Project Structure

@@ -101,16 +101,33 @@ class Product(models.Model):
             self.brand = normalize_text(self.brand)
         
         # Automatic Weight Extraction
+        # Multipack-aware: "COCA 12X350ML" must yield 4200 (12x350ml), not 350.
         target_name = self.display_name or self.name
         matches = re.findall(r'(\d+[\.,]?\d*)\s*(G|KG|ML|L)', target_name.upper())
-        if matches:
-            val_str, unit = matches[-1]
-            try:
-                # Use Decimal to avoid precision issues and TypeError during ReceiptItem.save
+        multi = re.search(r'(\d+)\s*[X]\s*(\d+[\.,]?\d*)\s*(G|KG|ML|L)', target_name.upper())
+        extracted = None
+        try:
+            if multi:
+                count = Decimal(multi.group(1))
+                val = Decimal(multi.group(2).replace(',', '.'))
+                unit = multi.group(3)
+                size = val if unit in ['G', 'ML'] else val * 1000
+                extracted = (count * size).quantize(Decimal('1'))
+            elif matches:
+                val_str, unit = matches[-1]
                 val = Decimal(val_str.replace(',', '.'))
-                self.weight_grams = val if unit in ['G', 'ML'] else val * 1000
-            except: pass
-            
+                extracted = val if unit in ['G', 'ML'] else val * 1000
+        except Exception:
+            extracted = None
+
+        if extracted is not None:
+            self.weight_grams = extracted
+        elif not self.is_manually_edited:
+            # Name no longer carries a size (e.g. edited to "Nescau"): clear the
+            # stale weight instead of silently keeping the old value, which
+            # poisoned every future normalized_price for this product.
+            self.weight_grams = None
+
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -133,8 +150,13 @@ class ProductMapping(models.Model):
 class PriceHistory(models.Model):
     """
     Denormalized time-series table for high-performance analytics.
+    `receipt` ties each row back to the purchase it came from: deleting a
+    receipt now cascades to its history rows, and refreshing a receipt
+    (delete + re-create) no longer leaves the old rows behind as unlinked
+    ghosts that inflated every average. Nullable only for legacy rows.
     """
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='price_history', null=True, blank=True)
+    receipt = models.ForeignKey('Receipt', on_delete=models.CASCADE, related_name='price_history', null=True, blank=True)
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='price_history')
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='price_history')
     date = models.DateTimeField(db_index=True)
@@ -150,7 +172,7 @@ class PriceHistory(models.Model):
 
 class Receipt(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='receipts', null=True, blank=True)
-    access_key = models.CharField(max_length=44, unique=True, db_index=True)
+    access_key = models.CharField(max_length=44, db_index=True)
     url = models.URLField(max_length=1000)
     issue_date = models.DateTimeField(db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True, db_index=True)
@@ -181,6 +203,12 @@ class Receipt(models.Model):
             models.Index(fields=['user', '-issue_date']),
             models.Index(fields=['access_key']),
         ]
+        # Access keys are only unique PER USER: two accounts can legitimately
+        # import the same public NFCe. The old global unique=True on
+        # access_key made the second import crash with IntegrityError.
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'access_key'], name='uniq_receipt_user_accesskey')
+        ]
 
     @classmethod
     def monthly_stats(cls, user_ids=None):
@@ -207,13 +235,18 @@ class ReceiptItem(models.Model):
 
     def save(self, *args, **kwargs):
         # Calculate Normalized Price (Price per 1kg or 1L)
-        if self.product.weight_grams and self.product.weight_grams > 0:
-            # normalized_price = (unit_price / weight_grams) * 1000
-            # Ensure we are dividing Decimal by Decimal (just in case weight_grams is still float in memory)
-            weight = Decimal(str(self.product.weight_grams))
-            self.normalized_price = (self.unit_price / weight) * 1000
-        else:
-            self.normalized_price = self.unit_price
+        # Only compute when the caller didn't supply one: the scraper's
+        # _calculate_normalization understands multipacks ("12X350ML" -> price
+        # per litre of the whole pack), and the old unconditional overwrite
+        # replaced it with a value based on weight_grams=350, inflating
+        # multipack prices ~12x across all analytics.
+        if self.normalized_price is None:
+            if self.product.weight_grams and self.product.weight_grams > 0:
+                # Ensure we are dividing Decimal by Decimal (just in case weight_grams is still float in memory)
+                weight = Decimal(str(self.product.weight_grams))
+                self.normalized_price = (self.unit_price / weight) * 1000
+            else:
+                self.normalized_price = self.unit_price
         super().save(*args, **kwargs)
 
     class Meta:

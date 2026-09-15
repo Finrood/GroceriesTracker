@@ -84,6 +84,16 @@ class ReceiptService:
             }
         )
 
+        # Idempotent import: an NFCe access key uniquely identifies one
+        # receipt, and the DB constraint below is the last-resort guard.
+        # Returning the existing row turns accidental re-submissions into
+        # no-ops instead of IntegrityError 500s.
+        access_key = data['receipt'].get('access_key', '')
+        if access_key:
+            existing = Receipt.objects.filter(user=user, access_key=access_key).first()
+            if existing:
+                return existing
+
         receipt = Receipt.objects.create(
             store=store,
             user=user,
@@ -170,9 +180,11 @@ class ReceiptService:
                 normalized_price=i.get('normalized_price')
             )
 
-            # Populate Time-Series History
+            # Populate Time-Series History (receipt FK lets deletes/refreshes
+            # cascade cleanly instead of leaving ghost rows in analytics)
             PriceHistory.objects.create(
                 user=user,
+                receipt=receipt,
                 product=prod,
                 store=store,
                 date=receipt.issue_date,
@@ -384,7 +396,14 @@ class AnalyticsService:
         days_passed = today.day
         last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
         total_days = last_day.day
-        
+
+        # No spending data at all -> no projection to show. (The analytics JS
+        # already treats a falsy 'projected' as "hide the forecast widget";
+        # returning a zeroed dict used to render an all-zero forecast and
+        # failed the empty-dataset test.)
+        if not Receipt.objects.filter(user=user).exists():
+            return None
+
         # 1. Current Month Velocity
         current_spend = Receipt.objects.filter(
             user=user, 

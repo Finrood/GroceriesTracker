@@ -3,5 +3,9 @@ __pycache__
 *.pyc
 .git
 .idea
+.env
+.env.*
+*.sqlite3
 db.sqlite3
 media/products/*
+

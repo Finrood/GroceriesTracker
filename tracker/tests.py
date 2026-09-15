@@ -1,4 +1,4 @@
-from django.test import TestCase, Client, TransactionTestCase
+from django.test import TestCase, Client, TransactionTestCase, RequestFactory
 from django.contrib.auth.models import User
 from django.urls import reverse
 from django.utils import timezone
@@ -278,3 +278,113 @@ class SmartCartMathTests(TestCase):
     def test_cheapest_store_selection(self):
         result = SmartCartService.optimize_cart(self.user, "Rice")
         self.assertEqual(result['single_store_recommendation']['store'], "Store B")
+
+
+class RefreshAndCleanupRegressionTests(TestCase):
+    """Regression tests for the 2026-09-15 bug-fix round."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='regress', password='p')
+        self.other = User.objects.create_user(username='intruder', password='p')
+        self.store = Store.objects.create(name="Store X", cnpj="123")
+        self.product = Product.objects.create(name="Cafe 500g", display_name="Cafe 500g")
+        self.receipt = Receipt.objects.create(
+            store=self.store, user=self.user,
+            url="https://sat.sef.sc.gov.br/test",
+            access_key="9" * 44, number="123", series="1",
+            total_amount=Decimal('25.00'), discount=Decimal('0'),
+            issue_date=timezone.now(),
+        )
+        ReceiptItem.objects.create(
+            receipt=self.receipt, product=self.product,
+            quantity=Decimal('2'), unit_type='UN',
+            unit_price=Decimal('12.50'), total_price=Decimal('25.00'),
+        )
+
+    def test_receipt_deletion_cascades_to_price_history(self):
+        """PriceHistory rows must carry receipt FK and die with their receipt."""
+        PriceHistory.objects.create(
+            user=self.user, receipt=self.receipt, product=self.product,
+            store=self.store, date=self.receipt.issue_date,
+            unit_price=Decimal('12.50'), normalized_price=Decimal('12.50'),
+        )
+        self.receipt.delete()
+        self.assertEqual(PriceHistory.objects.count(), 0)
+
+    def test_duplicate_import_is_rejected(self):
+        """Re-processing the same NFCe access key must not create a 2nd receipt."""
+        from tracker.services import ReceiptService
+        data = {
+            'store': {'name': 'Store X', 'cnpj': '123', 'city': 'C',
+                      'neighborhood': 'N', 'street': 'S'},
+            'receipt': {
+                'access_key': '9' * 44, 'issue_date': timezone.now(),
+                'series': '1', 'number': '123', 'total_amount': Decimal('25.00'),
+                'discount': 0, 'payment_method': 'X',
+                'tax_federal': 0, 'tax_state': 0, 'tax_municipal': 0,
+                'consumer_cpf': None,
+            },
+            'items': [{'name': 'Cafe 500g', 'quantity': Decimal('2'),
+                       'unit_price': Decimal('12.50'), 'total_price': Decimal('25.00'),
+                       'unit_type': 'UN', 'category': 'Geral'}],
+        }
+        ReceiptService.save_scraped_data(data, 'https://sat.sef.sc.gov.br/x', self.user)
+        self.assertEqual(Receipt.objects.count(), 1)
+
+    def test_refresh_rejects_other_users_receipt(self):
+        """A user must not be able to refresh (delete) someone else's receipt."""
+        from tracker.views import confirm_refresh
+        from django.core.exceptions import PermissionDenied
+        scraped = {
+            'store': {'name': 'Store X', 'cnpj': '123', 'city': 'C',
+                      'neighborhood': 'N', 'street': 'S'},
+            'receipt': {
+                'access_key': '9' * 44, 'issue_date': timezone.now(),
+                'series': '1', 'number': '123', 'total_amount': Decimal('30.00'),
+                'discount': 0, 'payment_method': 'X',
+                'tax_federal': 0, 'tax_state': 0, 'tax_municipal': 0,
+                'consumer_cpf': None,
+            },
+            'items': [],
+        }
+        factory = RequestFactory()
+        request = factory.post('/confirm_refresh/', {'url': 'https://sat.sef.sc.gov.br/test'})
+        request.user = self.other
+        with patch('tracker.views.NFCeScraper.scrape_url', return_value=scraped):
+            with self.assertRaises(PermissionDenied):
+                confirm_refresh(request)
+        self.assertEqual(Receipt.objects.count(), 1)
+
+    def test_confirm_refresh_replaces_same_receipt(self):
+        """Full refresh flow: scrape -> delete old -> import -> redirect."""
+        scraped = {
+            'store': {'name': 'Store X', 'cnpj': '123', 'city': 'C',
+                      'neighborhood': 'N', 'street': 'S'},
+            'receipt': {
+                'access_key': '9' * 44, 'issue_date': timezone.now(),
+                'series': '1', 'number': '123', 'total_amount': Decimal('30.00'),
+                'discount': 0, 'payment_method': 'X',
+                'tax_federal': 0, 'tax_state': 0, 'tax_municipal': 0,
+                'consumer_cpf': None,
+            },
+            'items': [{'name': 'Cafe 500g', 'quantity': Decimal('2'),
+                       'unit_price': Decimal('15.00'), 'total_price': Decimal('30.00'),
+                       'unit_type': 'UN', 'category': 'Geral'}],
+        }
+        self.client.force_login(self.user)
+        with patch('tracker.views.NFCeScraper.scrape_url', return_value=scraped):
+            # secure=True: SECURE_SSL_REDIRECT=True in the container env would
+            # otherwise 301-redirect plain-http test requests before the view.
+            response = self.client.post(reverse('confirm_refresh'), {'url': 'https://sat.sef.sc.gov.br/test'}, secure=True)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Receipt.objects.count(), 1)
+        self.assertEqual(PriceHistory.objects.count(), 1)
+
+    def test_maintenance_view_tolerates_bad_mapping_id(self):
+        """Non-numeric mapping_id must return 400, not raise ValueError/500."""
+        from tracker.views import system_maintenance
+        factory = RequestFactory()
+        request = factory.post('/maintenance/', {'action': 'confirm_mapping', 'mapping_id': 'garbage'})
+        request.user = User.objects.create_user(username='staffer', password='p', is_staff=True)
+        response = system_maintenance(request)
+        self.assertEqual(response.status_code, 400)

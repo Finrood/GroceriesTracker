@@ -1,22 +1,31 @@
-# Use an official Python runtime as a parent image
-FROM python:3.14-slim
+# ---- builder: compile deps ----
+FROM python:3.14-slim AS builder
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-# Set work directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y build-essential libpq-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
 COPY requirements.txt /app/
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip && pip install --prefix=/install -r requirements.txt
 
-# Copy project
+# ---- runtime: slim, no compilers ----
+FROM python:3.14-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# libpq runtime only (psycopg2-binary needs it); no build tools here.
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /install /usr/local
 COPY . /app/
 
 # The CMD will be overridden by docker-compose for different services
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+CMD ["gunicorn", "GroceriesTracker.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]

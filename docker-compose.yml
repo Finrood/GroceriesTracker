@@ -1,20 +1,63 @@
+name: groceries
+
 services:
   web:
     build: .
-    command: python manage.py runserver 0.0.0.0:8000
+    container_name: groceries-web
+    restart: unless-stopped
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             exec gunicorn GroceriesTracker.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
+    env_file:
+      - .env
     volumes:
-      - .:/app
+      - ./db.sqlite3:/app/db.sqlite3
+      - ./media:/app/media
+      - ./staticfiles:/app/staticfiles
+      - ./django_cache:/app/django_cache
     ports:
       - "8000:8000"
     environment:
-      - DEBUG=True
-    restart: always
+      - TZ=America/Sao_Paulo
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; r=urllib.request.Request('http://127.0.0.1:8000/admin/login/', headers={'X-Forwarded-Proto':'https'}); urllib.request.urlopen(r)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
 
   worker:
     build: .
+    container_name: groceries-worker
+    restart: unless-stopped
     command: python manage.py qcluster
+    env_file:
+      - .env
     volumes:
-      - .:/app
+      - ./db.sqlite3:/app/db.sqlite3
+      - ./media:/app/media
+      - ./django_cache:/app/django_cache
+    environment:
+      - TZ=America/Sao_Paulo
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     depends_on:
       - web
-    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+

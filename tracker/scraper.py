@@ -2,11 +2,14 @@ import requests
 from bs4 import BeautifulSoup
 from decimal import Decimal
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import re
 import logging
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+BRAZIL_TZ = ZoneInfo('America/Sao_Paulo')
 
 class NFCeScraper:
     HEADERS = {
@@ -40,13 +43,19 @@ class NFCeScraper:
 
     @staticmethod
     def parse_br_datetime(date_str):
-        try:
-            match = re.search(r'(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2})', date_str)
-            if match:
-                return datetime.strptime(match.group(1), '%d/%m/%Y %H:%M:%S')
-            return datetime.now()
-        except:
-            return datetime.now()
+        """
+        SEFAZ pages print wall-clock time in America/Sao_Paulo with no UTC offset.
+        The old code returned a NAIVE datetime, which Django (USE_TZ=True) stored
+        as UTC — shifting every receipt and PriceHistory row +3h. Verified
+        empirically 2026-09-15: 29 receipts, scrape-vs-issue delta floor 182min,
+        zero below 60min. Returns None when no timestamp is parseable so the
+        caller can fail loudly instead of saving a receipt with a fabricated date.
+        """
+        match = re.search(r'(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2})', date_str or '')
+        if not match:
+            return None
+        naive = datetime.strptime(match.group(1), '%d/%m/%Y %H:%M:%S')
+        return naive.replace(tzinfo=BRAZIL_TZ)
 
     def scrape_url(self, url):
         # SSRF Check
@@ -90,6 +99,14 @@ class NFCeScraper:
             },
             'items': self._parse_items_robust(soup, full_text)
         }
+
+        # Fail loudly rather than persisting a receipt with fabricated/zero
+        # financials. The old fallbacks (datetime.now() / total 0.00) silently
+        # poisoned analytics: monthly spend under-reported, dates shifted.
+        if data['receipt']['issue_date'] is None:
+            raise ValueError("Could not parse the receipt issue date (Emissão) from the page.")
+        if data['receipt']['total_amount'] <= 0:
+            raise ValueError("Could not parse the receipt total (Valor total) from the page.")
         return data
 
     def _extract_store_name(self, soup, text):
@@ -188,7 +205,10 @@ class NFCeScraper:
                     'code_gtin': gtin.group(1) if gtin else "",
                     'internal_code': re.search(r'Código:\s*(\d+)', name_raw).group(1) if "Código:" in name_raw else "",
                     'quantity': self.parse_br_decimal(cols[1].text),
-                    'unit_type': re.search(r'[A-Z]{2}', cols[2].text).group(0) if cols[2].text else "UN",
+                    # Guard: unit cell without a 2-letter uppercase run used to
+                    # raise AttributeError ('NoneType' has no group) and fail
+                    # the entire scrape.
+                    'unit_type': (re.search(r'[A-Z]{2}', cols[2].text).group(0) if (cols[2].text and re.search(r'[A-Z]{2}', cols[2].text)) else "UN"),
                     'unit_price': self.parse_br_decimal(cols[3].text) if len(cols) > 3 else Decimal('0'),
                     'total_price': self.parse_br_decimal(cols[4].text) if len(cols) > 4 else Decimal('0'),
                 })

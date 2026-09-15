@@ -1,6 +1,7 @@
 from django.shortcuts import render, redirect, get_object_or_404
 from django.views.decorators.http import require_POST
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import PermissionDenied
 from django.db import transaction, models
 from django.http import JsonResponse
 from .scraper import NFCeScraper
@@ -80,13 +81,19 @@ def system_maintenance(request):
             OrmQ.objects.all().delete()
             messages.success(request, "Task queue has been purged.")
         elif action == 'confirm_mapping':
-            m_id = request.POST.get('mapping_id')
-            ProductMapping.objects.filter(id=m_id).update(is_confirmed=True)
-            return JsonResponse({'status': 'ok'})
+            m_id = request.POST.get('mapping_id', '')
+            # Non-numeric ids used to raise ValueError -> 500 (staff-only view,
+            # but still an avoidable crash). Also report whether a row matched.
+            if m_id.isdigit():
+                updated = ProductMapping.objects.filter(id=m_id).update(is_confirmed=True)
+                return JsonResponse({'status': 'ok', 'updated': updated})
+            return JsonResponse({'status': 'error', 'message': 'invalid mapping_id'}, status=400)
         elif action == 'delete_mapping':
-            m_id = request.POST.get('mapping_id')
-            ProductMapping.objects.filter(id=m_id).delete()
-            return JsonResponse({'status': 'ok'})
+            m_id = request.POST.get('mapping_id', '')
+            if m_id.isdigit():
+                deleted = ProductMapping.objects.filter(id=m_id).delete()[0]
+                return JsonResponse({'status': 'ok', 'deleted': deleted})
+            return JsonResponse({'status': 'error', 'message': 'invalid mapping_id'}, status=400)
         return redirect('system_maintenance')
 
     # 2. Stats
@@ -364,13 +371,18 @@ def receipt_list(request):
 def receipt_detail(request, receipt_id):
     receipt = get_object_or_404(Receipt.objects.select_related('store', 'user'), id=receipt_id)
     items = receipt.items.select_related('product', 'product__category').all()
-    
+
+    # Filter BEFORE benchmarking: the old code computed benchmarks for every
+    # item and only then applied the q filter, discarding the annotated values
+    # (filtered queryset = new objects without .benchmark) and wasting a
+    # PriceHistory query per hidden item.
+    item_query = request.GET.get('q', '')
+    if item_query: items = items.filter(product__name__icontains=item_query)
+
     # Calculate benchmarks for items
     for item in items:
         item.benchmark = AnalyticsService.get_price_benchmark(request.user, item.product_id, item.unit_price)
-        
-    item_query = request.GET.get('q', '')
-    if item_query: items = items.filter(product__name__icontains=item_query)
+
     category_summary = items.values('product__category__name').annotate(total=Sum('total_price'), count=Count('id')).order_by('-total')
     all_categories = Category.objects.all().order_by('name')
     return render(request, 'tracker/receipt_detail.html', {
@@ -502,7 +514,9 @@ def process_nfce_url(request):
     except Exception as e:
         ScrapeLog.objects.create(url=url, status='FAILED', error_message=str(e), user=request.user)
         logger.error(f"Failed to parse URL {url}: {str(e)}", exc_info=True)
-        return render(request, 'tracker/index.html', {'error': f"Failed to parse: {str(e)}"})
+        # Generic user-facing message: exception strings can embed internal
+        # details (paths, upstream URLs). Full detail stays in ScrapeLog/logs.
+        return render(request, 'tracker/index.html', {'error': 'Could not process that receipt URL. Check that it is a valid NFCe consultation page and try again.'})
 
 @login_required
 @require_POST
@@ -519,10 +533,20 @@ def refresh_receipt(request, receipt_id):
 @require_POST
 @transaction.atomic
 def confirm_refresh(request):
-    url = request.POST.get('url'); scraper = NFCeScraper(); new_data = scraper.scrape_url(url); access_key = new_data['receipt']['access_key']
-    existing = Receipt.objects.filter(access_key=access_key, user=request.user).first()
-    if existing: existing.delete()
+    url = request.POST.get('url')
+    scraper = NFCeScraper()
+    new_data = scraper.scrape_url(url)
+    access_key = new_data['receipt']['access_key']
+    # Ownership check: the receipt is located by the scraped access key, not a
+    # URL parameter, so receipt_owner_required does not apply here. Without
+    # this, refreshing another user's NFCe URL would delete THEIR receipt.
+    existing = Receipt.objects.filter(access_key=access_key).select_related('user').first()
+    if existing and existing.user != request.user and not request.user.is_staff:
+        raise PermissionDenied("You do not have permission to refresh this receipt.")
+    if existing:
+        existing.delete()
     receipt = ReceiptService.save_scraped_data(new_data, url, request.user)
+    cache.clear()
     messages.success(request, f"Updated receipt from {receipt.store.name}")
     return redirect('receipt_detail', receipt_id=receipt.id)
 

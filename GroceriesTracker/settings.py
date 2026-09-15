@@ -39,10 +39,40 @@ if not ALLOWED_HOSTS or ALLOWED_HOSTS == ['']:
 # Allow local development
 ALLOWED_HOSTS += ['localhost', '127.0.0.1', '[::1]']
 
-# Proper HTTPS detection behind Nginx
+# Proxy / HTTPS hardening (Cloudflare Tunnel -> http://192.168.1.50:8000)
+# Tunnel terminates TLS; Django must trust X-Forwarded-Proto for is_secure()/CSRF.
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
 USE_X_FORWARDED_PORT = True
+
+# CSRF + cookies for the public origin. Localhost stays usable for checks.
+CSRF_TRUSTED_ORIGINS = [
+    o for o in os.getenv(
+        'CSRF_TRUSTED_ORIGINS',
+        'https://groceries.samuelpetre.com',
+    ).split(',') if o
+]
+SESSION_COOKIE_SECURE = os.getenv('SESSION_COOKIE_SECURE', 'True').lower() in ('true', '1', 't', 'y', 'yes')
+CSRF_COOKIE_SECURE = os.getenv('CSRF_COOKIE_SECURE', 'True').lower() in ('true', '1', 't', 'y', 'yes')
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = False  # must stay readable by Django admin JS
+X_FRAME_OPTIONS = 'DENY'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'same-origin'
+
+# Force HTTPS for any request that arrives without X-Forwarded-Proto: https.
+# Safe here: Cloudflare Tunnel always sends the header, and the healthcheck
+# sends it explicitly so http://127.0.0.1:8000 checks stay redirect-free.
+SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'True').lower() in ('true', '1', 't', 'y', 'yes')
+
+# HSTS: 1 year. Env-overridable so you can relax it without editing code:
+#   SECURE_HSTS_INCLUDE_SUBDOMAINS=False  -> only this host is pinned to HTTPS
+# Note: every *.samuelpetre.com subdomain is published through Cloudflare as
+# HTTPS-only, so includeSubDomains is safe here. SSH (ssh.samuelpetre.com) is
+# unaffected: browsers only apply HSTS to HTTPS, never to ssh://.
+SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '31536000'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'True').lower() in ('true', '1', 't', 'y', 'yes')
+SECURE_HSTS_PRELOAD = os.getenv('SECURE_HSTS_PRELOAD', 'True').lower() in ('true', '1', 't', 'y', 'yes')
 
 # Application definition
 # ... (existing APPS and MIDDLEWARE) ...
@@ -108,8 +138,11 @@ Q_CLUSTER = {
     'orm': 'default',
 }
 
+# WhiteNoise: serve /static/ straight from gunicorn (no extra web server).
+# Middleware order matters: SecurityMiddleware -> WhiteNoise -> rest.
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -149,6 +182,7 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
         'OPTIONS': {
             'timeout': 60, # Extreme patience for SQLite locks
+            'init_command': 'PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=60000;',
         }
     }
 }
@@ -197,6 +231,18 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# Django 4.2+ style storage config (replaces deprecated STATICFILES_STORAGE).
+# CompressedManifestStaticFilesStorage = hashed names + gzip/brotli precompression,
+# served by WhiteNoise straight from gunicorn.
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 # Media files (Uploaded product images)
 MEDIA_URL = '/media/'
