@@ -73,7 +73,9 @@ class AnalyticsBoundaryTests(TestCase):
 class EnrichmentChainTests(TestCase):
     @patch('requests.get')
     def test_aggregator_resilience(self, mock_get):
-        product = Product.objects.create(name="Test Prod", code_gtin="7891234567890")
+        # 7891097103643 is a real checksum-valid EAN-13 (PLU-like fakes such
+        # as 7891234567890 fail validation and must skip the GTIN APIs).
+        product = Product.objects.create(name="Test Prod", code_gtin="7891097103643")
         
         # Provide enough mocks for the whole chain (OFF, ML, Buscape, Amazon, Cosmos)
         ml_html = '<div class="ui-search-result__content"><h2 class="ui-search-item__title">Success Name</h2><img class="ui-search-result-image__element" src="http://img.jpg"></div>'
@@ -388,3 +390,96 @@ class RefreshAndCleanupRegressionTests(TestCase):
         request.user = User.objects.create_user(username='staffer', password='p', is_staff=True)
         response = system_maintenance(request)
         self.assertEqual(response.status_code, 400)
+
+
+class GtinPluSplitTests(TestCase):
+    def test_valid_gtin_accepted(self):
+        from tracker.gtin import is_valid_gtin, split_scraped_code
+        # Real EAN-13 from live data
+        self.assertTrue(is_valid_gtin('7891097103643'))
+        self.assertTrue(is_valid_gtin('7894900701517'))
+        gtin, internal = split_scraped_code('7891097103643')
+        self.assertEqual(gtin, '7891097103643')
+        self.assertEqual(internal, '7891097103643')
+
+    def test_plu_rejected_as_gtin(self):
+        from tracker.gtin import is_valid_gtin, split_scraped_code
+        for plu in ['231', '2904', '82', '69728', '1640540', '12345']:
+            self.assertFalse(is_valid_gtin(plu), f"PLU {plu} must not validate")
+            gtin, internal = split_scraped_code(plu)
+            self.assertEqual(gtin, '')
+            self.assertEqual(internal, plu)
+
+    def test_instore_weigh_code_rejected(self):
+        from tracker.gtin import is_valid_gtin, _ean_checksum_valid
+        # Build a 13-digit code starting with 2 that HAS a valid checksum:
+        # it must still be rejected as in-store, not global.
+        body = '200123456789'
+        total = sum(int(ch) * (3 if i % 2 == 0 else 1)
+                    for i, ch in enumerate(reversed(body)))
+        check = (10 - (total % 10)) % 10
+        weigh = body + str(check)
+        self.assertTrue(_ean_checksum_valid(weigh))
+        self.assertFalse(is_valid_gtin(weigh))
+
+    def test_bad_checksum_rejected(self):
+        from tracker.gtin import is_valid_gtin
+        self.assertFalse(is_valid_gtin('7891097103644'))  # last digit flipped
+        self.assertFalse(is_valid_gtin('12345678'))
+
+    def test_product_save_clears_plu(self):
+        p = Product.objects.create(name="CEBOLA BRANCA KG", code_gtin='69728')
+        p.refresh_from_db()
+        self.assertTrue(p.code_gtin in (None, ''))
+
+    def test_product_save_keeps_valid_gtin(self):
+        p = Product.objects.create(name="REAL GTIN PROD", code_gtin='7891097103643')
+        p.refresh_from_db()
+        self.assertEqual(p.code_gtin, '7891097103643')
+
+    def test_scraper_splits_codes(self):
+        from tracker.scraper import NFCeScraper
+        from unittest.mock import MagicMock
+        scraper = NFCeScraper()
+        html = ('<table id="tabResult"><tr><td>CEBOLA BRANCA KG (Código: 69728)</td>'
+                '<td>1</td><td>KG</td><td>9,99</td><td>9,99</td></tr></table>')
+        soup = MagicMock()
+        # Use real BeautifulSoup for the table path
+        from bs4 import BeautifulSoup as BS
+        soup = BS(html, 'html.parser')
+        items = scraper._parse_items_robust(soup, '')
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['code_gtin'], '')
+        self.assertEqual(items[0]['internal_code'], '69728')
+
+    def test_receipt_service_does_not_merge_plu_across_stores(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        user = User.objects.create_user(username='plu_user', password='p')
+        store_a = Store.objects.create(name="Store A", cnpj="11111111000111")
+        store_b = Store.objects.create(name="Store B", cnpj="22222222000122")
+        base = {'access_key': '', 'issue_date': tz.now(), 'series': '1',
+                'number': '1', 'total_amount': D('10'), 'discount': 0,
+                'payment_method': 'X', 'tax_federal': 0, 'tax_state': 0,
+                'tax_municipal': 0, 'consumer_cpf': None}
+        # Same PLU '231' at two stores but DIFFERENT products must not merge
+        # via the global GTIN path (mapping is store-scoped).
+        d1 = {'store': {'name': 'Store A', 'cnpj': '11111111000111', 'city': 'C',
+                        'neighborhood': 'N', 'street': 'S'},
+              'receipt': dict(base, access_key='1' * 44),
+              'items': [{'name': 'MAMAO PAPAYA KG', 'quantity': D('1'),
+                         'unit_price': D('5'), 'total_price': D('5'),
+                         'unit_type': 'KG', 'category': 'Hortifruti',
+                         'code_gtin': '', 'internal_code': '231'}]}
+        d2 = {'store': {'name': 'Store B', 'cnpj': '22222222000122', 'city': 'C',
+                        'neighborhood': 'N', 'street': 'S'},
+              'receipt': dict(base, access_key='2' * 44),
+              'items': [{'name': 'ABOBORA KABOTIA KG', 'quantity': D('1'),
+                         'unit_price': D('6'), 'total_price': D('6'),
+                         'unit_type': 'KG', 'category': 'Hortifruti',
+                         'code_gtin': '', 'internal_code': '231'}]}
+        with patch('tracker.services.async_task'):
+            r1 = ReceiptService.save_scraped_data(d1, 'http://x/1', user)
+            r2 = ReceiptService.save_scraped_data(d2, 'http://x/2', user)
+        self.assertNotEqual(r1.items.first().product_id,
+                            r2.items.first().product_id)

@@ -6,6 +6,8 @@ from decimal import Decimal
 
 import re
 
+from .gtin import is_valid_gtin, normalize_code
+
 def normalize_text(text, is_product=False):
     if not text: return text
     # 1. Remove multiple spaces and strip
@@ -95,6 +97,10 @@ class Product(models.Model):
 
     def save(self, *args, **kwargs):
         self.name = self.name.upper().strip() # Raw name stays upper for scraper matching
+        # Never persist store-local PLUs or weigh codes as the global GTIN.
+        if self.code_gtin:
+            cleaned = normalize_code(self.code_gtin)
+            self.code_gtin = cleaned if is_valid_gtin(cleaned) else None
         if self.display_name:
             self.display_name = normalize_text(self.display_name, is_product=True)
         if self.brand:

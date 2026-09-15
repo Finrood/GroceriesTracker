@@ -84,10 +84,13 @@ class ProductEnrichmentService:
 
     @staticmethod
     def enrich_product(product):
+        from .gtin import is_valid_gtin
         if product.name.upper() == 'DEBUG' or len(product.name) < 2: return False
         if not product.metadata: product.metadata = {}
         improved = False
-        if product.code_gtin and len(product.code_gtin) >= 8:
+        # Only real global GTINs hit the GTIN APIs; PLUs/weigh codes would
+        # waste lookups and risk wrong-product metadata.
+        if product.code_gtin and is_valid_gtin(product.code_gtin):
             if ProductEnrichmentService._fetch_off(product, 'off_gtin'): improved = True
             if ProductEnrichmentService._fetch_mercadolivre(product, 'api_gtin'): improved = True
         if not improved or not product.image_url:

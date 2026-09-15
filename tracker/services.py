@@ -11,6 +11,7 @@ from django_q.tasks import async_task
 from rapidfuzz import fuzz, process
 from .models import Store, Product, Category, Receipt, ReceiptItem, PriceHistory, ProductMapping
 from .enrichment import ProductEnrichmentService
+from .gtin import is_valid_gtin, normalize_code
 
 class ReceiptService:
     @staticmethod
@@ -103,12 +104,16 @@ class ReceiptService:
 
         for i in data['items']:
             cat, _ = Category.objects.get_or_create(name=i.get('category', 'Geral'))
-            gtin, name = i.get('code_gtin'), i['name'].strip()
-            internal_code = i.get('internal_code')
-            
+            raw_gtin = normalize_code(i.get('code_gtin'))
+            # Only real global GTINs may hit the cross-store lookup. Short
+            # PLUs and in-store weigh codes are store-scoped (see gtin.py).
+            gtin = raw_gtin if is_valid_gtin(raw_gtin) else ''
+            name = i['name'].strip()
+            internal_code = normalize_code(i.get('internal_code')) or raw_gtin
+
             prod = None
-            
-            # 1. Try GTIN (Universal)
+
+            # 1. Try GTIN (Universal, valid GTINs only)
             if gtin:
                 prod = Product.objects.filter(code_gtin=gtin).first()
             

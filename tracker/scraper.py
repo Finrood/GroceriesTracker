@@ -7,6 +7,8 @@ import re
 import logging
 from urllib.parse import urlparse
 
+from .gtin import split_scraped_code
+
 logger = logging.getLogger(__name__)
 
 BRAZIL_TZ = ZoneInfo('America/Sao_Paulo')
@@ -199,11 +201,16 @@ class NFCeScraper:
                 name_raw = cols[0].text.strip()
                 if "Código" not in name_raw and "Descrição" in name_raw: continue
                 name_clean = self._clean_product_name(name_raw.split('(Código')[0].strip())
-                gtin = re.search(r'Código:\s*(\d+)', name_raw)
+                code_m = re.search(r'Código:\s*(\d+)', name_raw)
+                raw_code = code_m.group(1) if code_m else ""
+                # GTIN vs PLU split: short store-local PLUs and in-store weigh
+                # codes (20-29 prefix) must NOT populate code_gtin, which is
+                # the global cross-store key. internal_code always keeps them.
+                gtin, internal = split_scraped_code(raw_code)
                 items.append({
                     'name': name_clean,
-                    'code_gtin': gtin.group(1) if gtin else "",
-                    'internal_code': re.search(r'Código:\s*(\d+)', name_raw).group(1) if "Código:" in name_raw else "",
+                    'code_gtin': gtin,
+                    'internal_code': internal,
                     'quantity': self.parse_br_decimal(cols[1].text),
                     # Guard: unit cell without a 2-letter uppercase run used to
                     # raise AttributeError ('NoneType' has no group) and fail
@@ -222,10 +229,11 @@ class NFCeScraper:
             )
             for m in pattern.finditer(text):
                 name = self._clean_product_name(m.group(1).strip())
+                gtin, internal = split_scraped_code(m.group(2).strip())
                 items.append({
                     'name': name,
-                    'code_gtin': m.group(2).strip(),
-                    'internal_code': m.group(2).strip(), # In regex, code is captured here
+                    'code_gtin': gtin,
+                    'internal_code': internal, # raw store code, always kept
                     'quantity': self.parse_br_decimal(m.group(3)),
                     'unit_type': m.group(4).strip(),
                     'unit_price': self.parse_br_decimal(m.group(5)),
