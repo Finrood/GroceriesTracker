@@ -23,21 +23,24 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
-def _get_trading_name(full_name):
-    # Standardize common corporate names to recognizable trading names
-    names = {
-        'SDB COMERCIO': 'Fort Atacadista',
-        'ANGELONI': 'Angeloni',
-        'GIASSI': 'Giassi',
-        'BISTEK': 'Bistek',
-        'CONDOR': 'Condor',
-        'MAGAZINE LUIZA': 'Magalu',
-        'WMS BRASIL': 'Carrefour/Big'
-    }
-    upper_name = full_name.upper()
-    for key, val in names.items():
-        if key in upper_name: return val
-    return full_name.title()
+def _get_trading_name(full_name, store=None):
+    """Consumer-facing store/chain name (kept for compat; see models.resolve_trading_name).
+
+    When a Store object (or a fiscal name present in the DB) has a linked
+    chain, the chain brand wins; otherwise falls back to alias mapping.
+    """
+    from .models import resolve_trading_name
+    if store is not None and getattr(store, 'chain_id', None):
+        try:
+            if store.chain is not None:
+                return store.chain.name
+        except Exception:
+            pass
+    if full_name:
+        hit = Store.objects.filter(name=full_name).select_related('chain').first()
+        if hit is not None and hit.chain_id and hit.chain is not None:
+            return hit.chain.name
+    return resolve_trading_name(full_name or '')
 
 def _get_user_filter(request):
     """
@@ -156,7 +159,7 @@ def shopping_optimizer(request):
             optimized_list.append({
                 'product': item.product,
                 'price': item.unit_price,
-                'store_name': _get_trading_name(item.receipt.store.name),
+                'store_name': _get_trading_name(item.receipt.store.name, store=item.receipt.store),
                 'store_obj': item.receipt.store,
                 'date': item.receipt.issue_date
             })
@@ -307,7 +310,7 @@ def dashboard(request):
     
     store_perf = []
     for s in store_perf_raw:
-        s.trading_name = _get_trading_name(s.name); store_perf.append(s)
+        s.trading_name = _get_trading_name(s.name, store=s); store_perf.append(s)
 
     receipt_qs = Receipt.objects.all()
     if user_ids: receipt_qs = receipt_qs.filter(user_id__in=user_ids)

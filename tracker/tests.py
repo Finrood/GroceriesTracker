@@ -581,3 +581,50 @@ class BackfillHistoryTests(TestCase):
         self.assertEqual(PriceHistory.objects.filter(receipt=r).count(), 2)
         call_command('backfill_history')
         self.assertEqual(PriceHistory.objects.filter(receipt=r).count(), 4)
+
+
+class StoreChainTests(TestCase):
+    def test_resolve_trading_name_aliases(self):
+        from tracker.models import resolve_trading_name
+        self.assertEqual(resolve_trading_name('SDB COMERCIO DE ALIMENTOS LTDA'), 'Fort Atacadista')
+        self.assertEqual(resolve_trading_name('A. ANGELONI   CIA LTDA'), 'Angeloni')
+        self.assertEqual(resolve_trading_name('KOCH HIPERMERCADO S/A LJ 47'), 'Koch')
+        self.assertEqual(resolve_trading_name('Mercadinho do Zé'), 'Mercadinho Do Zé')
+
+    def test_assign_chains_groups_by_root(self):
+        from django.core.management import call_command
+        from tracker.models import StoreChain
+        a = Store.objects.create(name="A. ANGELONI   CIA LTDA", cnpj="83646984001696",
+                                 address_city="F")
+        b = Store.objects.create(name="A. ANGELONI   CIA LTDA", cnpj="83646984007465",
+                                 address_city="F")
+        call_command('assign_chains', '--apply')
+        a.refresh_from_db(); b.refresh_from_db()
+        self.assertIsNotNone(a.chain_id)
+        self.assertEqual(a.chain_id, b.chain_id)
+        self.assertEqual(a.chain.name, 'Angeloni')
+        self.assertEqual(a.display_name, 'Angeloni')
+
+    def test_unknown_store_stays_chainless(self):
+        from django.core.management import call_command
+        s = Store.objects.create(name="Unknown Store", cnpj="", address_city="Unknown")
+        call_command('assign_chains', '--apply')
+        s.refresh_from_db()
+        self.assertIsNone(s.chain_id)
+
+    def test_empty_cnpj_import_reuses_fallback(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        user = User.objects.create_user(username='chain_cnpj', password='p')
+        data = {'store': {'name': 'Whatever', 'cnpj': '', 'city': 'C',
+                          'neighborhood': 'N', 'street': 'S'},
+                'receipt': {'access_key': '4' * 44, 'issue_date': tz.now(),
+                            'series': '1', 'number': '1', 'total_amount': D('5'),
+                            'discount': 0, 'payment_method': 'X', 'tax_federal': 0,
+                            'tax_state': 0, 'tax_municipal': 0, 'consumer_cpf': None},
+                'items': []}
+        with patch('tracker.services.async_task'):
+            r1 = ReceiptService.save_scraped_data(dict(data), 'http://x/1', user)
+            data['receipt']['access_key'] = '5' * 44
+            r2 = ReceiptService.save_scraped_data(dict(data), 'http://x/2', user)
+        self.assertEqual(r1.store_id, r2.store_id)

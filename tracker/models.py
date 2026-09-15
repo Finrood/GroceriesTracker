@@ -37,6 +37,32 @@ class StoreChain(models.Model):
     def __str__(self):
         return self.name
 
+
+# Corporate-name fragments -> consumer-facing chain brand. Single source of
+# truth for trading names (used by Store.display_name, assign_chains and the
+# legacy views._get_trading_name wrapper).
+CHAIN_ALIASES = {
+    'SDB COMERCIO': 'Fort Atacadista',
+    'FORT ATACADISTA': 'Fort Atacadista',
+    'ANGELONI': 'Angeloni',
+    'GIASSI': 'Giassi',
+    'BISTEK': 'Bistek',
+    'CONDOR': 'Condor',
+    'MAGAZINE LUIZA': 'Magalu',
+    'WMS BRASIL': 'Carrefour/Big',
+    'KOCH HIPERMERCADO': 'Koch',
+    'SACOLAO MERCADO': 'Sacolão Mercado',
+}
+
+
+def resolve_trading_name(full_name):
+    """Map a fiscal corporate name to its consumer-facing chain brand."""
+    upper_name = (full_name or '').upper()
+    for key, val in CHAIN_ALIASES.items():
+        if key in upper_name:
+            return val
+    return (full_name or '').title()
+
 class Store(models.Model):
     name = models.CharField(max_length=255)
     chain = models.ForeignKey(StoreChain, on_delete=models.SET_NULL, null=True, blank=True, related_name='stores')
@@ -52,7 +78,24 @@ class Store(models.Model):
         if self.cnpj:
             self.cnpj = ''.join(filter(str.isdigit, self.cnpj))
             self.cnpj_root = self.cnpj[:8]
+        else:
+            self.cnpj_root = ''
         super().save(*args, **kwargs)
+
+    @property
+    def display_name(self):
+        """Consumer-facing name: chain brand when linked, else alias mapping."""
+        if self.chain_id and getattr(self, 'chain', None) is not None:
+            # chain may be unfetched; use cached id via query only if needed
+            try:
+                return self.chain.name
+            except StoreChain.DoesNotExist:
+                pass
+        elif self.chain_id:
+            chain = StoreChain.objects.filter(id=self.chain_id).first()
+            if chain:
+                return chain.name
+        return resolve_trading_name(self.name)
 
     def __str__(self):
         return self.name

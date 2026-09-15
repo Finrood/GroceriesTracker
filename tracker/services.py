@@ -75,15 +75,30 @@ class ReceiptService:
         Processes and saves a receipt and its items.
         Uses GTIN and ProductMapping (internal store codes) for 100% accuracy.
         """
-        store, _ = Store.objects.get_or_create(
-            cnpj=data['store']['cnpj'],
-            defaults={
-                'name': data['store']['name'],
-                'address_city': data['store']['city'],
-                'address_neighborhood': data['store']['neighborhood'],
-                'address_street': data['store']['street']
-            }
-        )
+        store_cnpj = normalize_code(data['store'].get('cnpj', ''))
+        if store_cnpj:
+            store, _ = Store.objects.get_or_create(
+                cnpj=store_cnpj,
+                defaults={
+                    'name': data['store']['name'],
+                    'address_city': data['store']['city'],
+                    'address_neighborhood': data['store']['neighborhood'],
+                    'address_street': data['store']['street']
+                }
+            )
+        else:
+            # Scrapes without CNPJ are undifferentiable (unique constraint on
+            # cnpj allows a single '' row): reuse one fallback store instead
+            # of crashing with IntegrityError on the second import.
+            store, _ = Store.objects.get_or_create(
+                name='Unknown Store',
+                defaults={'cnpj': '', 'address_city': 'Unknown',
+                          'address_neighborhood': '', 'address_street': ''}
+            )
+        # Keep every store linked to its chain (new CNPJs arrive over time).
+        if store.chain_id is None and store.cnpj_root:
+            from .management.commands.assign_chains import assign_store_chain
+            assign_store_chain(store)
 
         # Idempotent import: an NFCe access key uniquely identifies one
         # receipt, and the DB constraint below is the last-resort guard.
