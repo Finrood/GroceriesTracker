@@ -977,3 +977,94 @@ class CategoryKeywordTests(TestCase):
         # No regression: provolone still dairy (Laticínios checked before OVO)
         self.assertEqual(s._guess_category('QUEIJO PROVOLONE KG'), 'Laticínios')
         self.assertEqual(s._guess_category('MACARRAO RENATA 500G'), 'Mercearia')
+
+
+class RenormalizeTests(TestCase):
+    def _mk(self, user, store, name, weight_display=None):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        r = Receipt.objects.create(store=store, user=user, url='http://x',
+                                   access_key='1' * 44, issue_date=tz.now(),
+                                   total_amount=D('30'))
+        p = Product.objects.create(name=name)
+        return r, p
+
+    def test_weight_change_propagates_to_items_and_history(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        from tracker.models import PriceHistory
+        user = User.objects.create_user(username='renorm', password='p')
+        store = Store.objects.create(name="S", cnpj="22222222000122")
+        r = Receipt.objects.create(store=store, user=user, url='http://x',
+                                   access_key='1' * 44, issue_date=tz.now(),
+                                   total_amount=D('30'))
+        # Import-time: no size in name -> normalized falls back to unit price
+        p = Product.objects.create(name="STALE WEIGHT PROD")
+        self.assertIsNone(p.weight_grams)
+        item = ReceiptItem.objects.create(receipt=r, product=p, quantity=D('1'),
+                                          unit_type='UN', unit_price=D('18'),
+                                          total_price=D('18'))
+        self.assertEqual(item.normalized_price, D('18'))
+        PriceHistory.objects.create(user=user, receipt=r, product=p, store=store,
+                                    date=r.issue_date, unit_price=D('18'),
+                                    normalized_price=D('18'))
+        # Correction: name gains the size -> weight extracted -> rows repaired
+        p.display_name = "Stale Weight Prod 1.5kg"
+        p.save()
+        p.refresh_from_db()
+        self.assertEqual(p.weight_grams, D('1500'))
+        item.refresh_from_db()
+        self.assertEqual(item.normalized_price, D('12'))
+        hist = PriceHistory.objects.get(receipt=r, product=p)
+        self.assertEqual(hist.normalized_price, D('12'))
+
+    def test_decimal_dust_not_touched(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        from tracker.models import PriceHistory
+        user = User.objects.create_user(username='renorm2', password='p')
+        store = Store.objects.create(name="S", cnpj="22222222000122")
+        r = Receipt.objects.create(store=store, user=user, url='http://x',
+                                   access_key='1' * 44, issue_date=tz.now(),
+                                   total_amount=D('10'))
+        p = Product.objects.create(name="COCA 2L")
+        item = ReceiptItem.objects.create(receipt=r, product=p, quantity=D('1'),
+                                          unit_type='UN', unit_price=D('10'),
+                                          total_price=D('10'),
+                                          normalized_price=D('5.00'))
+        # Scraper quantized to cents; formula gives 5 exactly -> no churn
+        touched = p.renormalize_items()
+        self.assertEqual(touched, 0)
+        item.refresh_from_db()
+        self.assertEqual(item.normalized_price, D('5.00'))
+
+    def test_command_dry_run_and_apply(self):
+        from django.core.management import call_command
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        from tracker.models import PriceHistory
+        user = User.objects.create_user(username='renorm3', password='p')
+        store = Store.objects.create(name="S", cnpj="22222222000122")
+        r = Receipt.objects.create(store=store, user=user, url='http://x',
+                                   access_key='1' * 44, issue_date=tz.now(),
+                                   total_amount=D('30'))
+        p = Product.objects.create(name="CMD STALE PROD")
+        ReceiptItem.objects.create(receipt=r, product=p, quantity=D('1'),
+                                   unit_type='UN', unit_price=D('20'),
+                                   total_price=D('20'))
+        PriceHistory.objects.create(user=user, receipt=r, product=p, store=store,
+                                    date=r.issue_date, unit_price=D('20'),
+                                    normalized_price=D('20'))
+        # Simulate a later weight correction directly (bypass save hook)
+        Product.objects.filter(id=p.id).update(weight_grams=D('1000'))
+        call_command('renormalize')
+        item = ReceiptItem.objects.get(receipt=r, product=p)
+        self.assertEqual(item.normalized_price, D('20'))  # dry-run: untouched
+        call_command('renormalize', '--apply')
+        item.refresh_from_db()
+        self.assertEqual(item.normalized_price, D('20'))  # 20/1000*1000 == 20
+        # Now a real drift: weight 500 -> 40 per kg
+        Product.objects.filter(id=p.id).update(weight_grams=D('500'))
+        call_command('renormalize', '--apply')
+        item.refresh_from_db()
+        self.assertEqual(item.normalized_price, D('40'))

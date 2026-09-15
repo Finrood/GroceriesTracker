@@ -221,10 +221,83 @@ class Product(models.Model):
             # poisoned every future normalized_price for this product.
             self.weight_grams = None
 
+        # A weight change retroactively falsifies every frozen normalized_price
+        # (items/history keep the value computed at import). Propagate, unless
+        # the caller scoped this save away from weight (update_fields).
+        update_fields = kwargs.get('update_fields')
+        propagate = update_fields is None or 'weight_grams' in update_fields
+        old_weight = None
+        if propagate and self.pk:
+            old_weight = type(self).objects.filter(pk=self.pk).values_list(
+                'weight_grams', flat=True).first()
+
         super().save(*args, **kwargs)
+
+        if propagate and self.pk and _weights_differ(old_weight, self.weight_grams):
+            self.renormalize_items()
+
+    def renormalize_items(self):
+        """Recompute frozen normalized prices from the CURRENT weight.
+
+        Only materially stale rows are touched (see needs_renorm); weightless
+        products are skipped entirely (unit-price fallback can't beat the
+        import-time value). Mirrors into PriceHistory so benchmarks/inflation
+        read one consistent definition. Returns rows touched.
+        """
+        if not self.weight_grams or Decimal(str(self.weight_grams)) <= 0:
+            return 0
+        touched = 0
+        for item in ReceiptItem.objects.filter(product=self).only(
+                'id', 'receipt_id', 'unit_price', 'normalized_price'):
+            want = normalized_for(item.unit_price, self.weight_grams)
+            if needs_renorm(item.normalized_price, want):
+                ReceiptItem.objects.filter(id=item.id).update(normalized_price=want)
+                PriceHistory.objects.filter(
+                    receipt_id=item.receipt_id, product=self,
+                    unit_price=item.unit_price).exclude(
+                    normalized_price=want).update(normalized_price=want)
+                touched += 1
+        return touched
 
     def __str__(self):
         return self.display_name or self.name
+
+def _weights_differ(old, new):
+    if old is None and new is None:
+        return False
+    if old is None or new is None:
+        return True
+    return Decimal(str(old)) != Decimal(str(new))
+
+
+def needs_renorm(stored, want):
+    """True only for material drift, not Decimal dust.
+
+    Import-time values were quantized to cents by the scraper while the
+    formula yields full precision (6.39 vs 6.3933…): rewriting those rows
+    churns data for zero analytic gain. A weight correction (1.66 vs 16.61
+    after BD 18L -> 1.8L) exceeds the tolerance by orders of magnitude.
+    """
+    if stored is None or want is None:
+        return stored != want
+    stored, want = Decimal(str(stored)), Decimal(str(want))
+    if stored == want:
+        return False
+    tolerance = max(Decimal('0.005'), abs(want) * Decimal('0.005'))
+    return abs(stored - want) > tolerance
+
+
+def normalized_for(unit_price, weight_grams):
+    """Price per 1kg/1L for a unit price and weight in grams (single formula).
+
+    Used by ReceiptItem.save for new rows and by Product.renormalize_items
+    to repair rows frozen under an older (misparsed, since corrected) weight.
+    weight_grams is multipack-aware, so pack math agrees with the scraper.
+    """
+    if weight_grams and Decimal(str(weight_grams)) > 0:
+        weight = Decimal(str(weight_grams))
+        return (Decimal(str(unit_price)) / weight) * 1000
+    return Decimal(str(unit_price))
 
 class ProductMapping(models.Model):
     """
@@ -334,12 +407,7 @@ class ReceiptItem(models.Model):
         # replaced it with a value based on weight_grams=350, inflating
         # multipack prices ~12x across all analytics.
         if self.normalized_price is None:
-            if self.product.weight_grams and self.product.weight_grams > 0:
-                # Ensure we are dividing Decimal by Decimal (just in case weight_grams is still float in memory)
-                weight = Decimal(str(self.product.weight_grams))
-                self.normalized_price = (self.unit_price / weight) * 1000
-            else:
-                self.normalized_price = self.unit_price
+            self.normalized_price = normalized_for(self.unit_price, self.product.weight_grams)
         super().save(*args, **kwargs)
 
     class Meta:
