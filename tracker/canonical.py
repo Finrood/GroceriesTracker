@@ -71,6 +71,12 @@ def gates_pass(a, b):
     """Hard requirements shared by auto-merge and suggestions."""
     if size_key_for(a) != size_key_for(b):
         return False
+    # Distinct manufacturer SKUs = distinct items, even when names are close
+    # (e.g. different nail-polish shades or chocolate flavors). Same GTIN
+    # always merges via preview_groups; one-sided GTINs still pass.
+    ga, gb = (a.code_gtin or ''), (b.code_gtin or '')
+    if ga and gb and ga != gb:
+        return False
     if a.category_id and b.category_id and a.category_id != b.category_id:
         return False
     na, nb = (a.ncm or '')[:2], (b.ncm or '')[:2]

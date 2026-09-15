@@ -941,3 +941,39 @@ class CanonicalGroupingTests(TestCase):
         self.assertEqual(resp2.status_code, 200)
         sugg2.refresh_from_db()
         self.assertEqual(sugg2.status, CanonicalSuggestion.DISMISSED)
+
+
+class CanonicalGatesTests(TestCase):
+    def test_distinct_gtins_never_merge_or_suggest(self):
+        from tracker import canonical as cs
+        a = Product.objects.create(name="ESM RISQUE CREM 8ML", code_gtin='7891182015226')
+        b = Product.objects.create(name="ESM RISQUE NAT 8ML", code_gtin='7891182850025')
+        self.assertFalse(cs.gates_pass(a, b))
+        groups, suggestions = cs.preview_groups([a, b])
+        self.assertEqual(len(groups), 2)
+        self.assertEqual(suggestions, [])
+
+    def test_one_sided_gtin_still_passes(self):
+        from tracker import canonical as cs
+        cat = Category.objects.create(name="Hortifruti")
+        a = Product.objects.create(name="CEBOLA BRANCA KG", category=cat)
+        b = Product.objects.create(name="CEBOLA KG", category=cat)
+        self.assertTrue(cs.gates_pass(a, b))
+
+
+class CategoryKeywordTests(TestCase):
+    def test_new_hortifruti_keywords(self):
+        from tracker.scraper import NFCeScraper as S
+        s = S()
+        for name in ['PIMENTAO VERMELHO KG', 'LARANJA PERA KG', 'CENOURA KG',
+                     'MACA GALA KG', 'MORANGO BANDEJA UN']:
+            self.assertEqual(s._guess_category(name), 'Hortifruti', name)
+
+    def test_ovo_mercearia_esmalte_higiene(self):
+        from tracker.scraper import NFCeScraper as S
+        s = S()
+        self.assertEqual(s._guess_category('OVO BRANCO C/12'), 'Mercearia')
+        self.assertEqual(s._guess_category('ESMALTE RISQUE CREM 8ML'), 'Higiene')
+        # No regression: provolone still dairy (Laticínios checked before OVO)
+        self.assertEqual(s._guess_category('QUEIJO PROVOLONE KG'), 'Laticínios')
+        self.assertEqual(s._guess_category('MACARRAO RENATA 500G'), 'Mercearia')

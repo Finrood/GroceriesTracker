@@ -340,14 +340,20 @@ class NFCeScraper:
 
     def _guess_category(self, name):
         mapping = {
-            'Hortifruti': ['UVA', 'CEBOLA', 'TOMATE', 'ABACAXI', 'ABOBORA', 'BANANA', 'MAMAO', 'PAPAIA', 'BATATA', 'ALHO'],
+            'Hortifruti': ['UVA', 'CEBOLA', 'CEBOLINHA', 'TOMATE', 'ABACAXI', 'ABOBORA', 'ABOBRINHA',
+                           'BANANA', 'MAMAO', 'PAPAYA', 'PAPAIA', 'BATATA', 'ALHO', 'PIMENTAO', 'LARANJA',
+                           'LIMAO', 'CENOURA', 'BETERRABA', 'CHUCHU', 'REPOLHO', 'COUVE',
+                           'BROCOLIS', 'BERINJELA', 'QUIABO', 'JILO', 'PEPINO', 'MELANCIA',
+                           'MELAO', 'MANGA', 'MACA ', 'PESSEGO', 'MORANGO', 'KIWI', 'ABACATE',
+                           'GOIABA', 'MARACUJA', 'CAQUI', 'SALSINHA', 'COENTRO', 'ALFACE',
+                           'RUCULA', 'AGRIAO', 'MANDIOCA'],
             'Laticínios': ['IOGURTE', 'IOG', 'QUEIJO', 'LEITE', 'MANTEIGA', 'MARGARINA', 'REQUEIJAO', 'NATAS', 'CREME'],
             'Carnes & Peixes': ['CARNE', 'MOIDA', 'BISTECA', 'COXA', 'FGO', 'FRANGO', 'TILAPIA', 'LING', 'TOSCANA', 'SALSICHA', 'PRESUNTO'],
-            'Mercearia': ['ARROZ', 'FEIJAO', 'MAC', 'MACARRAO', 'EXT', 'MOLHO', 'ACUCAR', 'SAL', 'FARINHA', 'OLEO', 'AZEITE'],
+            'Mercearia': ['ARROZ', 'FEIJAO', 'MACARRAO', 'MAC', 'EXT', 'MOLHO', 'ACUCAR', 'SAL', 'FARINHA', 'OLEO', 'AZEITE', 'OVO'],
             'Bebidas': ['BEB', 'COOLER', 'CERVEJA', 'REFRIGERANTE', 'SUCO', 'AGUA', 'VINO', 'VINHO', 'GUSTO', 'CAFE'],
             'Doces & Snacks': ['CHOC', 'BARRA', 'DOCE', 'AMENDOIM', 'BISCOITO', 'BOLACHA', 'SNACK', 'SALGADINHO'],
             'Limpeza': ['DET', 'LIMPOL', 'ESPONJA', 'SABAO', 'AMACIANTE', 'DESINFETANTE', 'VEJA'],
-            'Higiene': ['CD', 'COLGATE', 'DENT', 'CREME DENTAL', 'SABONETE', 'SHAMPOO', 'PAPEL'],
+            'Higiene': ['CD', 'COLGATE', 'DENT', 'CREME DENTAL', 'SABONETE', 'SHAMPOO', 'PAPEL', 'ESMALTE', 'RISQUE'],
             'Pet Shop': ['CAES', 'GATOS', 'ALIM', 'RAÇÃO', 'PEDIGREE', 'WHISKAS'],
         }
         
