@@ -365,29 +365,89 @@ class NFCeScraper:
         
         return "Geral"
 
+    # Real Brazilian grocery brands (UPPER matching key -> display form).
+    # Deliberately conservative: unknown tokens yield '' (unknown) instead of
+    # a noise word ('Moida', 'Peito', 'Caturra'), which used to fake brand
+    # equality and sneak cross-brand pairs past the canonical gates.
+    KNOWN_BRANDS = {
+        'NESTLE': 'Nestle', 'TIROL': 'Tirol', 'SADIA': 'Sadia', 'SEARA': 'Seara',
+        'PERDIGAO': 'Perdigão', 'AURORA': 'Aurora', 'BATAVO': 'Batavo',
+        'PIRACANJUBA': 'Piracanjuba', 'ITALAC': 'Italac', 'MOLICO': 'Molico',
+        'PARMALAT': 'Parmalat', 'DANONE': 'Danone', 'VIGOR': 'Vigor',
+        'ITAMBE': 'Itambé', 'TIROLEZ': 'Tirolez', 'CRUZILIA': 'Cruzília',
+        'PRESIDENT': 'President', 'HOLANDES': 'Holandes', 'TREVISAN': 'Trevisan',
+        'NATURALLE': 'Naturalle', 'CANCAO': 'Canção', 'NAT': 'Nat',
+        'FRIMESA': 'Frimesa', 'COPACOL': 'Copacol', 'REZENDE': 'Rezende',
+        'MANTIQUEIRA': 'Mantiqueira', 'SUPERBOM': 'Superbom',
+        'NESCAU': 'Nescau', 'NEUGEBAUER': 'Neugebauer', 'MILKA': 'Milka',
+        'FERRERO': 'Ferrero', 'SNICKERS': 'Snickers', 'LACTA': 'Lacta',
+        'GAROTO': 'Garoto', 'HERSHEY': 'Hershey',
+        'SALSARETTI': 'Salsaretti', 'ELEFANTE': 'Elefante', 'HEINZ': 'Heinz',
+        'HELLMANNS': 'Hellmanns', 'KNORR': 'Knorr', 'MAGGI': 'Maggi',
+        'ARISCO': 'Arisco', 'QUERO': 'Quero', 'FUGINI': 'Fugini',
+        'ODERICH': 'Oderich', 'PREDILECTA': 'Predilecta',
+        'YOKI': 'Yoki', 'RENATA': 'Renata', 'SANTA HELENA': 'Santa Helena',
+        'MARILAN': 'Marilan', 'BAUDUCCO': 'Bauducco', 'WICKBOLD': 'Wickbold',
+        'PULLMAN': 'Pullman', 'PANCO': 'Panco', 'TIO JOAO': 'Tio João',
+        'CAMIL': 'Camil', 'CARAVELAS': 'Caravelas', 'UNIAO': 'União',
+        'QUALY': 'Qualy', 'BECEL': 'Becel', 'DORIANA': 'Doriana',
+        'DELICIA': 'Delícia',         'SOYA': 'Soya', 'LIZA': 'Liza',
+        'COLGATE': 'Colgate', 'ORAL B': 'Oral-B', 'CLOSEUP': 'Close-Up',
+        'PALMOLIVE': 'Palmolive', 'DOVE': 'Dove', 'NIVEA': 'Nivea',
+        'REXONA': 'Rexona', 'OMO': 'Omo', 'SURF': 'Surf',
+        'BRILHANTE': 'Brilhante', 'YPE': 'Ypê', 'VEJA': 'Veja',
+        'LIMPOL': 'Limpol', 'BOMBRIL': 'Bombril', 'ASSOLAN': 'Assolan',
+        'PEDIGREE': 'Pedigree', 'WHISKAS': 'Whiskas', 'ROYAL CANIN': 'Royal Canin',
+        'PREMIER': 'Premier', 'GOLDEN': 'Golden', 'DOG CHOW': 'Dog Chow',
+        'FRISKIES': 'Friskies',
+        'COCA COLA': 'Coca-Cola', 'PEPSI': 'Pepsi', 'ANTARCTICA': 'Antarctica',
+        'FANTA': 'Fanta', 'SPRITE': 'Sprite', 'KUAT': 'Kuat',
+        'CRYSTAL': 'Crystal', 'BONAFONT': 'Bonafont',
+        'SKOL': 'Skol', 'BRAHMA': 'Brahma', 'HEINEKEN': 'Heineken',
+        'CORONA': 'Corona', 'BOHEMIA': 'Bohemia', 'ITAIPAVA': 'Itaipava',
+        'AMSTEL': 'Amstel', 'BRUTAL FRUIT': 'Brutal Fruit',
+        'RISQUE': 'Risqué', 'COLORAMA': 'Colorama', 'IMPALA': 'Impala',
+        'GRANADO': 'Granado', 'JOHNSON': 'Johnson', 'HUGGIES': 'Huggies',
+        'PAMPERS': 'Pampers', 'ALWAYS': 'Always', 'INTIMUS': 'Intimus',
+        'FREE LAR': 'Free Lar', 'NIENOW': 'Nienow', 'IANA': 'Iana',
+        'FILIPPSEN': 'Filippsen', 'BURITI': 'Buriti', 'SULITA': 'Sulita',
+        'DOLCE GUSTO': 'Dolce Gusto', 'LAS DOSCIENTAS': 'Las Doscientas',
+        'KICALDO': 'Kicaldo', 'ZAELI': 'Zaeli', 'SEPÉ': 'Sepé',
+        'KITANO': 'Kitano', 'SAZON': 'Sazón', 'JASMINE': 'Jasmine',
+        'MAE TERRA': 'Mãe Terra', 'VAPZA': 'Vapza',
+        'VERDE CAMPO': 'Verde Campo', 'PRATO FINO': 'Prato Fino',
+        'LAS DOCIENTAS': 'Las Doscientas', 'SNOB': 'Snob',
+    }
+
+    # Longest match first so 'TIO JOAO' beats 'JOAO', 'COCA COLA' beats 'COLA'.
+    _BRAND_KEYS = sorted(
+        (k for k, v in KNOWN_BRANDS.items() if v),
+        key=lambda k: (-len(k.split()), -len(k)),
+    )
+
+    @staticmethod
+    def _fold(text):
+        import unicodedata
+        return ''.join(
+            c for c in unicodedata.normalize('NFD', text)
+            if unicodedata.category(c) != 'Mn')
+
+    @classmethod
+    def _lookup_brand(cls, tokens):
+        folded = [cls._fold(t) for t in tokens]
+        for key in cls._BRAND_KEYS:
+            parts = [cls._fold(p) for p in key.split()]
+            for i in range(len(folded) - len(parts) + 1):
+                if folded[i:i + len(parts)] == parts:
+                    return cls.KNOWN_BRANDS[key]
+        return ''
+
     def _guess_brand(self, name):
-        ignore_list = [
-            'ARROZ', 'LEITE', 'FEIJAO', 'ACUCAR', 'DET', 'CHOC', 'IOG', 'BEB', 'CR', 'CD', 
-            'LIMPOL', 'MAC', 'EXT', 'FILE', 'IOGURTE', 'MANTEIGA', 'BANANA', 'CEBOLA', 
-            'TOMATE', 'ABOBORA', 'ALIM', 'OVOS', 'QUEIJO', 'BISTECA', 'CARNE', 'UVA', 'MAMAO',
-            'BRANCA', 'LONGA', 'PO', 'BCO', 'UHT', 'PUBLICA', 'INTE', 'ZER', 'ZERO', 'CON', 
-            'COND', 'DESN', 'INTEG', 'INT', 'NAT', 'PROMOCAO', 'PESSEG', 'FREE', 'BARRA',
-            'CAES', 'DOCE', 'PENSE', 'MOR', 'RALADO', 'LAT', 'UHT', 'LV', 'PG', 'CONSULTA',
-            'PUBLICA', 'NFCE', 'DETALHES', 'SC', 'SEMENTE', 'SSEMENTE', 'VIDA', 'COMUM',
-            'PEROLA', 'KABOTIA', 'PAPAYA', 'SCOXA', 'KG', 'UN', 'L', 'ML'
-        ]
-        # Remove common noise words before guessing
         clean_name = self._clean_product_name(name)
-        words = re.findall(r'\w+', clean_name.upper())
-        if not words: return "Generic"
-        
-        for word in words:
-            clean_word = word.strip()
-            if clean_word.isdigit() or clean_word in ignore_list or len(clean_word) < 3:
-                continue
-            return clean_word.capitalize()
-        
-        return words[0].capitalize()
+        tokens = re.findall(r'[A-Z0-9]+', clean_name.upper())
+        if not tokens:
+            return ''
+        return self._lookup_brand(tokens)
 
     def _clean_product_name(self, name):
         noise = [

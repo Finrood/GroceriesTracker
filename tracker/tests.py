@@ -1068,3 +1068,38 @@ class RenormalizeTests(TestCase):
         call_command('renormalize', '--apply')
         item.refresh_from_db()
         self.assertEqual(item.normalized_price, D('40'))
+
+
+class BrandDictionaryTests(TestCase):
+    def test_known_brands_extracted(self):
+        from tracker.scraper import NFCeScraper as S
+        s = S()
+        self.assertEqual(s._guess_brand('COXA SCOXA FGO SADIA 1KG'), 'Sadia')
+        self.assertEqual(s._guess_brand('ARROZ BCO TIO JOAO 5KG'), 'Tio João')
+        self.assertEqual(s._guess_brand('FILE PEITO FGO NAT IQF 1KG'), 'Nat')
+        self.assertEqual(s._guess_brand('LEITE NATURALLE INTEGRAL TP 1L'), 'Naturalle')
+        self.assertEqual(s._guess_brand('REFRIG COCA COLA PET 2L'), 'Coca-Cola')
+        self.assertEqual(s._guess_brand('OVO CAIPIRA FREE LAR C/20'), 'Free Lar')
+
+    def test_noise_yields_unknown_not_fake_brand(self):
+        from tracker.scraper import NFCeScraper as S
+        s = S()
+        self.assertEqual(s._guess_brand('CARNE MOIDA KG PRIMEIRA'), '')
+        self.assertEqual(s._guess_brand('BANANA CATURRA KG'), '')
+        self.assertEqual(s._guess_brand('COXA SCOXA FGO 1KG'), '')
+        self.assertEqual(s._guess_brand(''), '')
+
+    def test_fix_brands_command(self):
+        from django.core.management import call_command
+        noisy = Product.objects.create(name="CARNE MOIDA KG PRIMEIRA", brand="Moida")
+        manual = Product.objects.create(name="COXA SCOXA FGO SADIA 1KG", brand="Weird",
+                                        is_manually_edited=True)
+        call_command('fix_brands', '--apply')
+        noisy.refresh_from_db()
+        manual.refresh_from_db()
+        self.assertEqual(noisy.brand, '')
+        self.assertEqual(manual.brand, 'Weird')  # untouched
+        good = Product.objects.create(name="LEITE TIROL 1L", brand="Tirol")
+        call_command('fix_brands', '--apply')
+        good.refresh_from_db()
+        self.assertEqual(good.brand, 'Tirol')
