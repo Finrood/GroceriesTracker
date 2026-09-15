@@ -139,15 +139,23 @@ class ReceiptService:
             
             # 5. Create if still not found
             if not prod:
+                from django.db import IntegrityError
                 readable = ReceiptService.generate_readable_name(name)
-                prod = Product.objects.create(
-                    name=name,
-                    display_name=readable,
-                    category=cat,
-                    brand=i.get('brand', ''),
-                    ncm=i.get('ncm', ''),
-                    code_gtin=gtin
-                )
+                try:
+                    prod = Product.objects.create(
+                        name=name,
+                        display_name=readable,
+                        category=cat,
+                        brand=i.get('brand', ''),
+                        ncm=i.get('ncm', ''),
+                        code_gtin=gtin or None,
+                    )
+                except IntegrityError:
+                    # Lost a race with a concurrent import of the same GTIN:
+                    # reuse the row the other transaction created.
+                    prod = Product.objects.filter(code_gtin=gtin).first()
+                    if prod is None:
+                        raise
                 # Async Enrichment: Don't block the receipt saving process
                 async_task('tracker.tasks.async_enrich_product', prod.id, q_options={'name': f"Enrich: {prod.name[:20]}"})
             else:

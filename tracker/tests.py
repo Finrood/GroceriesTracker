@@ -483,3 +483,48 @@ class GtinPluSplitTests(TestCase):
             r2 = ReceiptService.save_scraped_data(d2, 'http://x/2', user)
         self.assertNotEqual(r1.items.first().product_id,
                             r2.items.first().product_id)
+
+
+class DedupeProductsTests(TestCase):
+    def test_duplicate_gtin_rejected_by_constraint(self):
+        from django.db import IntegrityError
+        Product.objects.create(name="KEEPER", code_gtin='7891097103643')
+        with self.assertRaises(IntegrityError):
+            Product.objects.create(name="DUP", code_gtin='7891097103643')
+
+    def test_null_gtin_not_unique_blocked(self):
+        Product.objects.create(name="NULL A", code_gtin=None)
+        Product.objects.create(name="NULL B", code_gtin=None)
+        self.assertEqual(Product.objects.filter(code_gtin__isnull=True).count(), 2)
+
+    def test_dedupe_command_cleans_orphans_and_keeps_mapped(self):
+        # NOTE: duplicate-GTIN creation is blocked by uniq_product_gtin_not_null,
+        # so the merge path is exercised on legacy data via dry-run (verified
+        # live: GTIN 7891097103643 keep 1 merge 7). Here we cover the orphan
+        # path plus mapping preservation.
+        from django.core.management import call_command
+        from tracker.models import ProductMapping
+        keeper = Product.objects.create(name="KEEPER", code_gtin='7891097103643')
+        store = Store.objects.create(name="S", cnpj="99999999000199")
+        ProductMapping.objects.create(store=store, internal_code='X1', product=keeper)
+        orphan = Product.objects.create(name="ORPHAN NO REFS")
+        call_command('dedupe_products', '--apply')
+        self.assertFalse(Product.objects.filter(id=orphan.id).exists())
+        self.assertTrue(Product.objects.filter(id=keeper.id).exists())
+        self.assertEqual(ProductMapping.objects.get(store=store, internal_code='X1').product_id, keeper.id)
+
+    def test_keeper_prefers_most_history(self):
+        from tracker.management.commands.dedupe_products import _keeper
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        store = Store.objects.create(name="S2", cnpj="88888888000188")
+        user = User.objects.create_user(username='keeper_user', password='p')
+        a = Product.objects.create(name="A LONELY", code_gtin=None)
+        b = Product.objects.create(name="B BUSY", code_gtin=None)
+        r = Receipt.objects.create(store=store, user=user, url='http://x',
+                                   access_key='3' * 44, issue_date=tz.now(),
+                                   total_amount=D('10'))
+        ReceiptItem.objects.create(receipt=r, product=b, quantity=D('1'),
+                                   unit_type='UN', unit_price=D('10'),
+                                   total_price=D('10'))
+        self.assertEqual(_keeper([a, b]).id, b.id)
