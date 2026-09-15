@@ -729,3 +729,46 @@ class BenchmarkNormalizationTests(TestCase):
     def test_timezone_is_sao_paulo(self):
         from django.conf import settings
         self.assertEqual(settings.TIME_ZONE, 'America/Sao_Paulo')
+
+
+class ScraperDomainTests(TestCase):
+    def test_legacy_domains_still_allowed(self):
+        from tracker.scraper import NFCeScraper as S
+        for h in ['sat.sef.sc.gov.br', 'nfce.fazenda.sp.gov.br', 'nfce.sefaz.rs.gov.br',
+                  'homolog.sat.sef.sc.gov.br']:
+            self.assertTrue(S._is_allowed_host(h), h)
+
+    def test_all_ufs_covered_by_suffix_rule(self):
+        from tracker.scraper import NFCeScraper as S
+        for uf in 'AC AL AM AP BA CE DF ES GO MA MG MS MT PA PB PE PI PR RJ RN RO RR RS SC SE SP TO'.split():
+            self.assertTrue(S._is_allowed_host(f'nfce.sefaz.{uf.lower()}.gov.br'), uf)
+            self.assertTrue(S._is_allowed_host(f'nfce.fazenda.{uf.lower()}.gov.br'), uf)
+
+    def test_national_portals_allowed(self):
+        from tracker.scraper import NFCeScraper as S
+        self.assertTrue(S._is_allowed_host('www.nfe.fazenda.gov.br'))
+        self.assertTrue(S._is_allowed_host('dfe-portal.svrs.rs.gov.br'))
+
+    def test_malicious_hosts_blocked(self):
+        from tracker.scraper import NFCeScraper as S
+        for h in ['localhost', '127.0.0.1', '169.254.169.254', 'evil-site.com',
+                  'sefaz.ba.gov.br.evil.com', 'nfce.sefaz.xx.gov.br', '',
+                  'evilsefaz.ba.gov.br', None]:
+            self.assertFalse(S._is_allowed_host(h), repr(h))
+
+    def test_scrape_url_rejects_bad_scheme_and_host(self):
+        from tracker.scraper import NFCeScraper
+        s = NFCeScraper()
+        for url in ['file:///etc/passwd', 'ftp://nfce.sefaz.ba.gov.br/x',
+                    'https://evil-site.com/nfce', 'http://169.254.169.254/x']:
+            with self.assertRaises(ValueError):
+                s.scrape_url(url)
+
+    def test_payment_and_discount_fallbacks(self):
+        from tracker.scraper import NFCeScraper
+        s = NFCeScraper()
+        self.assertEqual(s._extract_payment_method('no payment info here'), 'Outros')
+        self.assertEqual(s._extract_payment_method('Forma de pagamento: PIX 42,00'), 'PIX')
+        self.assertEqual(s._extract_discount('Desconto: R$ 5,16'), '5,16')
+        self.assertEqual(s._extract_discount('Descontos R$: 4,35'), '4,35')
+        self.assertEqual(s._extract_discount('no discount'), '0')

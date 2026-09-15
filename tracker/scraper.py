@@ -18,7 +18,8 @@ class NFCeScraper:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
 
-    # SSRF Protection: Whitelist of allowed SEFAZ domains
+    # SSRF Protection: explicit SEFAZ hosts plus a fail-closed suffix rule for
+    # any other state's fiscal portal (*.sefaz/fazenda/sef/sefa.<UF>.gov.br).
     ALLOWED_DOMAINS = [
         'sat.sef.sc.gov.br',
         'www.sef.sc.gov.br',
@@ -27,7 +28,42 @@ class NFCeScraper:
         'nfce.fazenda.rj.gov.br',
         'nfce.fazenda.mg.gov.br',
         'nfce.sefaz.rs.gov.br',
+        # National contingency / portal hosts
+        'www.nfe.fazenda.gov.br',
+        'dfe-portal.svrs.rs.gov.br',
+        'www.svc.fazenda.gov.br',
+        'nfce.svrs.rs.gov.br',
     ]
+
+    # 27 federative units: suffix rule covers states not listed above.
+    BRAZIL_UFS = frozenset(
+        'AC AL AM AP BA CE DF ES GO MA MG MS MT PA PB PE PI PR RJ RN RO RR RS SC SE SP TO'.split()
+    )
+    FISCAL_SUFFIXES = ('.sefaz.', '.fazenda.', '.sef.', '.sefa.')
+
+    @classmethod
+    def _is_allowed_host(cls, hostname):
+        if not hostname:
+            return False
+        host = hostname.lower().rstrip('.')
+        # Block IP literals outright (SSRF: cloud metadata, intranet).
+        if re.fullmatch(r'\d+\.\d+\.\d+\.\d+', host):
+            return False
+        if host in cls.ALLOWED_DOMAINS:
+            return True
+        for domain in cls.ALLOWED_DOMAINS:
+            if host.endswith('.' + domain):
+                return True
+        # Generic fiscal-portal rule: <anything>.sefaz|fazenda|sef|sefa.<UF>.gov.br
+        if host.endswith('.gov.br'):
+            for suffix in cls.FISCAL_SUFFIXES:
+                idx = host.find(suffix)
+                if idx > 0:
+                    uf_part = host[idx + len(suffix):]
+                    uf = uf_part.split('.')[0].upper()
+                    if uf in cls.BRAZIL_UFS and uf_part.endswith('.gov.br'):
+                        return True
+        return False
 
     @staticmethod
     def clean_number(raw):
@@ -60,17 +96,10 @@ class NFCeScraper:
         return naive.replace(tzinfo=BRAZIL_TZ)
 
     def scrape_url(self, url):
-        # SSRF Check
+        # SSRF Check (fail-closed: only Brazilian fiscal portals)
         parsed = urlparse(url)
-        if parsed.hostname not in self.ALLOWED_DOMAINS:
-            # Check for subdomains if main domain not in list (e.g., homolog.sat.sef.sc.gov.br)
-            is_valid = False
-            for domain in self.ALLOWED_DOMAINS:
-                if parsed.hostname and (parsed.hostname == domain or parsed.hostname.endswith('.' + domain)):
-                    is_valid = True
-                    break
-            if not is_valid:
-                raise ValueError(f"Security: Domain {parsed.hostname} is not allowed for scraping.")
+        if parsed.scheme not in ('http', 'https') or not self._is_allowed_host(parsed.hostname):
+            raise ValueError(f"Security: Domain {parsed.hostname} is not allowed for scraping.")
 
         response = requests.get(url, headers=self.HEADERS, timeout=15)
         response.raise_for_status()
@@ -165,12 +194,16 @@ class NFCeScraper:
         return match.group(1) if match else "0"
 
     def _extract_discount(self, text):
-        match = re.search(r'Descontos R\$:\s*([\d.,]+)', text)
+        # Layouts vary: "Descontos R$:", "Desconto: R$ 5,00", "Desconto R$ 5,00".
+        match = re.search(r'Descontos?\s*:?\s*R\$\s*:?\s*([\d.,]+)', text, re.IGNORECASE)
         return match.group(1) if match else "0"
 
     def _extract_payment_method(self, text):
         match = re.search(r'Forma de pagamento:.*?([\w\s]+?)\s*[\d.,]+', text, re.DOTALL)
-        return match.group(1).strip() if match else "Cartão"
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+        # Honest fallback: old default 'Cartão' mislabeled PIX/cash as card.
+        return "Outros"
 
     def _extract_metadata(self, text):
         num = re.search(r'Número:\s*(\d+)', text)
