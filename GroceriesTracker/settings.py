@@ -258,3 +258,11 @@ STORAGES = {
 # Media files (Uploaded product images)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# IPCA reference series (Banco Central SGS, monthly %).
+# Food code is env-overridable and surfaced in the UI next to the label, so a
+# wrong default stays visible instead of silently mislabeling the chart.
+IPCA_SERIES = {
+    'IPCA geral': int(os.getenv('IPCA_SERIES_GERAL', '433')),
+    'IPCA alimentação': int(os.getenv('IPCA_FOOD_SERIES', '1635')),
+}

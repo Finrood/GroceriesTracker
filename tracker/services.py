@@ -7,6 +7,7 @@ from decimal import Decimal
 from datetime import datetime, timedelta
 from math import radians, cos, sin, asin, sqrt
 import re
+import requests
 from django_q.tasks import async_task
 from rapidfuzz import fuzz, process
 from .models import Store, Product, Category, Receipt, ReceiptItem, PriceHistory, ProductMapping
@@ -874,6 +875,7 @@ class AnalyticsService:
             cursor = (cursor - timedelta(days=1)).replace(day=1)
         starts.reverse()
         labels, totals, coverage = [], [], []
+        per_bucket = {buckets[key]['label']: [] for key in top_keys}
         for start in starts:
             if start.month == 12:
                 end = start.replace(year=start.year + 1, month=1)
@@ -882,14 +884,99 @@ class AnalyticsService:
             total, hit = 0.0, 0
             for key in top_keys:
                 vals = [v for d, v in buckets[key]['prices'] if start <= d < end]
+                avg = (sum(vals) / len(vals)) if vals else None
+                per_bucket[buckets[key]['label']].append(avg)
                 if vals:
-                    total += sum(vals) / len(vals)
+                    total += avg
                     hit += 1
             labels.append(start.strftime('%b %Y'))
             totals.append(round(total, 2))
             coverage.append(hit)
         return {'labels': labels, 'totals': totals, 'coverage': coverage,
-                'basket_size': len(top_keys)}
+                'basket_size': len(top_keys), 'series': per_bucket}
+
+    # ---------- Pack: IPCA overlay ----------
+
+    @staticmethod
+    def _fetch_ipca_series(code):
+        """Monthly % for a BCB SGS code, cached 7 days. {} on any failure."""
+        cache_key = f"ipca_sgs_{code}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            resp = requests.get(
+                f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}/dados",
+                params={'formato': 'json'}, timeout=10)
+            resp.raise_for_status()
+            out = {}
+            for row in resp.json():
+                try:
+                    dt = datetime.strptime(row['data'], '%d/%m/%Y')
+                    out[dt.strftime('%Y-%m')] = float(str(row['valor']).replace(',', '.'))
+                except (KeyError, ValueError):
+                    continue
+            cache.set(cache_key, out, 7 * 24 * 3600)
+            return out
+        except Exception:
+            return {}
+
+    @staticmethod
+    def get_ipca_overlay(user, months=12):
+        """Personal basket MoM % vs official IPCA MoM % per calendar month.
+
+        Never fails the page: each missing official series is reported in
+        `warnings` (with its SGS code) and simply omitted from the chart.
+        """
+        from django.conf import settings as dj_settings
+        basket = AnalyticsService.get_basket_over_time(user, months=months + 1)
+        # Basket MoM from consecutive monthly totals (skip zero gaps).
+        personal, labels = [], []
+        month_keys = []
+        now = timezone.now()
+        cursor = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        starts = []
+        for _ in range(months + 1):
+            starts.append(cursor)
+            cursor = (cursor - timedelta(days=1)).replace(day=1)
+        starts.reverse()
+        month_keys = [s.strftime('%Y-%m') for s in starts]
+        label_by_key = {s.strftime('%Y-%m'): s.strftime('%b %Y') for s in starts}
+        series = {}
+        for label, code in dj_settings.IPCA_SERIES.items():
+            data = AnalyticsService._fetch_ipca_series(code)
+            if data:
+                series[label] = {'code': code, 'data': data}
+        warnings = [f"{label} (SGS {code}) unavailable"
+                    for label, code in dj_settings.IPCA_SERIES.items()
+                    if label not in series]
+        out_labels, out_personal = [], []
+        out_series = {label: [] for label in series}
+        prev_avgs = None
+        for i, key in enumerate(month_keys):
+            label = label_by_key[key]
+            cur_avgs = {name: vals[i] for name, vals in basket['series'].items()
+                        if vals[i] is not None}
+            out_labels.append(label)
+            if prev_avgs:
+                # Like-for-like: only buckets present in BOTH months, so
+                # composition shifts can't print fake +/-300% inflation.
+                common = [b for b in cur_avgs if b in prev_avgs]
+                if common:
+                    cur = sum(cur_avgs[b] for b in common)
+                    prev = sum(prev_avgs[b] for b in common)
+                    out_personal.append(round((cur - prev) / prev * 100, 2) if prev else None)
+                else:
+                    out_personal.append(None)
+            else:
+                out_personal.append(None)
+            for s_label, s in series.items():
+                out_series[s_label].append(s['data'].get(key))
+            prev_avgs = cur_avgs or prev_avgs
+        return {'labels': out_labels, 'personal': out_personal,
+                'official': {l: {'code': s['code'], 'values': out_series[l]}
+                             for l, s in series.items()},
+                'warnings': warnings}
 
 class SmartCartService:
     @staticmethod

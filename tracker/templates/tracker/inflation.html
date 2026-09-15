@@ -26,6 +26,15 @@
     </div>
 </div>
 
+<div class="card mb-6">
+    <h3 class="card-title">🇧🇷 You vs IPCA (MoM %)</h3>
+    <p class="text-muted mb-4" style="font-size: 0.85rem;">Your basket's month-over-month change against official inflation. Gaps = months without basket coverage.</p>
+    <div id="ipcaWarn" class="text-xs text-muted mb-2"></div>
+    <div id="ipcaChart" style="height: 300px;">
+        <div class="text-center py-8 text-muted">Loading IPCA comparison...</div>
+    </div>
+</div>
+
 <div class="card" style="padding: 0; overflow: hidden;">
     <div class="card-header" style="padding: 1.5rem; border-bottom: 1px solid var(--border); margin-bottom: 0;">
         <h3 class="card-title" style="margin: 0;">Monthly Price Variance (Global)</h3>
@@ -106,6 +115,43 @@
 
     window.addEventListener('resize', () => {
         globalChart.resize(); categoryChart.resize();
+        const ipca = document.getElementById('ipcaChart');
+        if (ipca && ipca.__chart) ipca.__chart.resize();
     });
+
+    fetch('{% url "api_chart_data" %}?type=ipca')
+        .then(response => response.json())
+        .then(res => {
+            const el = document.getElementById('ipcaChart');
+            const warn = document.getElementById('ipcaWarn');
+            if (res.warnings && res.warnings.length) {
+                warn.textContent = 'Unavailable: ' + res.warnings.join('; ');
+            }
+            if (!res || !res.labels || !res.labels.length) {
+                el.innerHTML = '<div class="text-center py-8 text-muted">Not enough history.</div>';
+                return;
+            }
+            el.innerHTML = '';
+            const chart = echarts.init(el);
+            el.__chart = chart;
+            const series = [{name: 'Your basket', type: 'line', data: res.personal,
+                             smooth: true, connectNulls: false, lineStyle: {width: 3}}];
+            Object.entries(res.official || {}).forEach(([label, s]) => {
+                series.push({name: `${label} (SGS ${s.code})`, type: 'line',
+                             data: s.values, smooth: true, symbol: 'none',
+                             lineStyle: {type: 'dashed'}});
+            });
+            chart.setOption({
+                tooltip: {trigger: 'axis', valueFormatter: v => v == null ? '—' : v + '%'},
+                legend: {bottom: 0, icon: 'circle'},
+                xAxis: {type: 'category', data: res.labels},
+                yAxis: {type: 'value', axisLabel: {formatter: '{value}%'}},
+                series: series
+            });
+        })
+        .catch(() => {
+            document.getElementById('ipcaChart').innerHTML =
+                '<div class="text-center py-8 text-muted">Could not load IPCA comparison.</div>';
+        });
 </script>
 {% endblock %}

@@ -740,6 +740,10 @@ def api_chart_data(request):
         data = AnalyticsService.get_basket_over_time(request.user)
         return JsonResponse(data, safe=False)
 
+    elif chart_type == 'ipca':
+        data = AnalyticsService.get_ipca_overlay(request.user)
+        return JsonResponse(data, safe=False)
+
     elif chart_type == 'shrinkflation':
         data = AnalyticsService.get_shrinkflation_report(request.user)
         suggestions = AnalyticsService.get_variant_suggestions(request.user)

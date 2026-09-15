@@ -1320,3 +1320,66 @@ class DashboardBasicsTests(TestCase):
         self.assertAlmostEqual(wallets['Fort Atacadista']['spend'], 140.0)
         self.assertAlmostEqual(wallets['KOCH LJ']['spend'], 45.0)
         self.assertAlmostEqual(sum(c['pct'] for c in ctx['chain_share']), 100.0, places=0)
+
+
+class IpcaOverlayTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()  # IPCA series cache is shared across test runs
+
+    def _mk_hist(self, user, store, product, days_ago, price):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        PriceHistory.objects.create(user=user, product=product, store=store,
+                                    date=tz.now() - timedelta(days=days_ago),
+                                    unit_price=D(str(price)),
+                                    normalized_price=D(str(price)))
+
+    @patch('tracker.services.requests.get')
+    def test_overlay_combines_personal_and_official(self, mock_get):
+        from django.utils import timezone as tz
+        user = User.objects.create_user(username='ipca1', password='p')
+        store = Store.objects.create(name="S", cnpj="11111111000111")
+        prod = Product.objects.create(name="IPCA PROD")
+        # Two consecutive full months of history
+        first_of_this = tz.now().replace(day=1)
+        first_of_prev = (first_of_this - timedelta(days=1)).replace(day=1)
+        mid_prev = first_of_prev + timedelta(days=10)
+        mid_this = first_of_this + timedelta(days=10)
+        if mid_this > tz.now():
+            mid_this = tz.now() - timedelta(hours=1)
+        from decimal import Decimal as D
+        PriceHistory.objects.create(user=user, product=prod, store=store,
+                                    date=mid_prev, unit_price=D('10'),
+                                    normalized_price=D('10'))
+        PriceHistory.objects.create(user=user, product=prod, store=store,
+                                    date=mid_this, unit_price=D('11'),
+                                    normalized_price=D('11'))
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: [{'data': '01/01/2020', 'valor': '0,21'},
+                          {'data': '01/02/2020', 'valor': '0,25'}])
+        mock_get.return_value.raise_for_status = lambda: None
+        res = AnalyticsService.get_ipca_overlay(user, months=2)
+        self.assertIn('IPCA geral', res['official'])
+        self.assertEqual(res['warnings'], [])
+        # Personal MoM for the current month ≈ +10%
+        self.assertTrue(any(v is not None and abs(v - 10.0) < 0.01 for v in res['personal']))
+
+    @patch('tracker.services.requests.get')
+    def test_bcb_outage_degrades_gracefully(self, mock_get):
+        user = User.objects.create_user(username='ipca2', password='p')
+        mock_get.side_effect = Exception('BCB down')
+        res = AnalyticsService.get_ipca_overlay(user, months=2)
+        self.assertEqual(res['official'], {})
+        self.assertEqual(len(res['warnings']), 2)
+        self.assertEqual(res['personal'], [None, None, None])
+
+    @patch('tracker.services.requests.get')
+    def test_fetch_caches_and_parses(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: [{'data': '15/03/2021', 'valor': '0,93'},
+                                           {'data': 'bad-row', 'valor': 'x'}])
+        mock_get.return_value.raise_for_status = lambda: None
+        out = AnalyticsService._fetch_ipca_series(433)
+        self.assertEqual(out, {'2021-03': 0.93})
