@@ -182,7 +182,13 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
         'OPTIONS': {
             'timeout': 60, # Extreme patience for SQLite locks
-            'init_command': 'PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=60000;',
+            # NOTE: journal_mode MUST stay at SQLite's default (delete/rollback).
+            # This compose file bind-mounts db.sqlite3 as a *single file* while
+            # web and worker are separate containers, so WAL mode gives each
+            # container its own private -wal/-shm sidecars in the container
+            # layer -> the worker silently cannot see the web container's
+            # writes (split brain). Rollback journal lives inside the single
+            # shared file and is safe for this topology.
         }
     }
 }

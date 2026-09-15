@@ -5,6 +5,9 @@ services:
     build: .
     container_name: groceries-web
     restart: unless-stopped
+    # Graceful shutdown: gunicorn gets SIGTERM and finishes in-flight requests
+    # before exit; long grace period lets SQLite checkpoint/rollback cleanly.
+    stop_grace_period: 30s
     command: >
       sh -c "python manage.py migrate --noinput &&
              python manage.py collectstatic --noinput &&
@@ -12,10 +15,11 @@ services:
     env_file:
       - .env
     volumes:
-      - ./db.sqlite3:/app/db.sqlite3
-      - ./media:/app/media
-      - ./staticfiles:/app/staticfiles
-      - ./django_cache:/app/django_cache
+      # Whole project directory, not single files: SQLite sidecar files
+      # (-wal/-shm, rollback journal) must be visible to ALL containers that
+      # open the DB, otherwise WAL mode silently splits the database
+      # (verified live 2026-09-15: worker couldn't see web's queued tasks).
+      - .:/app
     ports:
       - "8000:8000"
     environment:
@@ -44,9 +48,8 @@ services:
     env_file:
       - .env
     volumes:
-      - ./db.sqlite3:/app/db.sqlite3
-      - ./media:/app/media
-      - ./django_cache:/app/django_cache
+      # See web: whole-dir mount keeps the SQLite sidecars shared.
+      - .:/app
     environment:
       - TZ=America/Sao_Paulo
     deploy:
@@ -54,7 +57,10 @@ services:
         limits:
           memory: 512M
     depends_on:
-      - web
+      # Start only when web is healthy, and restart with it on failure.
+      web:
+        condition: service_healthy
+        restart: true
     logging:
       driver: json-file
       options:
