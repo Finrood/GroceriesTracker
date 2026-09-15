@@ -528,3 +528,56 @@ class DedupeProductsTests(TestCase):
                                    unit_type='UN', unit_price=D('10'),
                                    total_price=D('10'))
         self.assertEqual(_keeper([a, b]).id, b.id)
+
+
+class BackfillHistoryTests(TestCase):
+    def _mk_receipt(self, user, store, n_items=3):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        r = Receipt.objects.create(store=store, user=user, url='http://x',
+                                   access_key='9' * 44, issue_date=tz.now(),
+                                   total_amount=D('30'))
+        p = Product.objects.create(name="BACKFILL PROD", code_gtin=None)
+        for _ in range(n_items):
+            ReceiptItem.objects.create(receipt=r, product=p, quantity=D('1'),
+                                       unit_type='UN', unit_price=D('10'),
+                                       total_price=D('10'))
+        return r
+
+    def test_check_reports_gap(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        user = User.objects.create_user(username='bf_check', password='p')
+        store = Store.objects.create(name="S", cnpj="77777777000177")
+        self._mk_receipt(user, store)
+        with self.assertRaises(CommandError):
+            call_command('backfill_history', '--check')
+
+    def test_repair_only_touches_gapped_receipts(self):
+        from django.core.management import call_command
+        from tracker.models import PriceHistory
+        user = User.objects.create_user(username='bf_fix', password='p')
+        store = Store.objects.create(name="S", cnpj="77777777000177")
+        good = self._mk_receipt(user, store)
+        call_command('backfill_history')  # repair all -> good gets history
+        before_ids = list(PriceHistory.objects.filter(receipt=good).values_list('id', flat=True))
+        self.assertEqual(len(before_ids), 3)
+        # Second run must be a no-op for the in-sync receipt (stable IDs)
+        call_command('backfill_history')
+        after_ids = list(PriceHistory.objects.filter(receipt=good).values_list('id', flat=True))
+        self.assertEqual(before_ids, after_ids)
+
+    def test_partial_gap_rebuilt(self):
+        from django.core.management import call_command
+        from tracker.models import PriceHistory
+        user = User.objects.create_user(username='bf_part', password='p')
+        store = Store.objects.create(name="S", cnpj="77777777000177")
+        r = self._mk_receipt(user, store, n_items=4)
+        call_command('backfill_history')
+        self.assertEqual(PriceHistory.objects.filter(receipt=r).count(), 4)
+        # Simulate partial loss, repair must restore to 4
+        ids = list(PriceHistory.objects.filter(receipt=r).values_list('id', flat=True)[:2])
+        PriceHistory.objects.filter(id__in=ids).delete()
+        self.assertEqual(PriceHistory.objects.filter(receipt=r).count(), 2)
+        call_command('backfill_history')
+        self.assertEqual(PriceHistory.objects.filter(receipt=r).count(), 4)
