@@ -211,6 +211,7 @@ class NFCeScraper:
                     'name': name_clean,
                     'code_gtin': gtin,
                     'internal_code': internal,
+                    'ncm': self._extract_row_ncm(row),
                     'quantity': self.parse_br_decimal(cols[1].text),
                     # Guard: unit cell without a 2-letter uppercase run used to
                     # raise AttributeError ('NoneType' has no group) and fail
@@ -234,6 +235,7 @@ class NFCeScraper:
                     'name': name,
                     'code_gtin': gtin,
                     'internal_code': internal, # raw store code, always kept
+                    'ncm': self._extract_row_ncm(None, m.group(0)),
                     'quantity': self.parse_br_decimal(m.group(3)),
                     'unit_type': m.group(4).strip(),
                     'unit_price': self.parse_br_decimal(m.group(5)),
@@ -248,10 +250,58 @@ class NFCeScraper:
             
         return self._finalize_items(items)
 
+    def _extract_row_ncm(self, row=None, text=''):
+        """Extract the 8-digit NCM tax code for one item row, or ''.
+
+        NCM is the only store-independent classification on the NFCe; some
+        SEFAZ layouts render it as its own column, others as an `NCM:` label
+        inside expandable item detail. Row-scoped only: never guess from the
+        full page text (that would attach one item's NCM to another).
+        """
+        scope = ''
+        if row is not None:
+            try:
+                scope = row.get_text(separator=' ')
+            except Exception:
+                scope = ''
+        scope = f"{scope} {text or ''}"
+        m = re.search(r'NCM\s*[:\-]?\s*(\d{4,8})', scope, re.IGNORECASE)
+        if m:
+            digits = re.sub(r'\D', '', m.group(1))
+            if len(digits) == 8:
+                return digits
+        return ''
+
+    # NCM chapter (first 2 digits) -> app Category. Used ONLY as a fallback
+    # when the keyword guesser returns 'Geral'.
+    NCM_CATEGORY_MAP = {
+        '02': 'Carnes & Peixes', '03': 'Carnes & Peixes', '16': 'Carnes & Peixes',
+        '04': 'Laticínios',
+        '07': 'Hortifruti', '08': 'Hortifruti',
+        '09': 'Mercearia', '10': 'Mercearia', '11': 'Mercearia',
+        '12': 'Mercearia', '14': 'Mercearia', '15': 'Mercearia',
+        '17': 'Mercearia', '19': 'Mercearia', '20': 'Mercearia',
+        '21': 'Mercearia', '23': 'Pet Shop', '25': 'Mercearia',
+        '18': 'Doces & Snacks',
+        '22': 'Bebidas',
+        '33': 'Higiene', '34': 'Limpeza',
+    }
+
+    @classmethod
+    def category_for_ncm(cls, ncm):
+        digits = re.sub(r'\D', '', ncm or '')
+        if len(digits) >= 2:
+            return cls.NCM_CATEGORY_MAP.get(digits[:2])
+        return None
+
     def _finalize_items(self, items):
         for item in items:
             item['brand'] = self._guess_brand(item['name'])
             item['category'] = self._guess_category(item['name'])
+            if item['category'] == 'Geral' and item.get('ncm'):
+                fallback = self.category_for_ncm(item['ncm'])
+                if fallback:
+                    item['category'] = fallback
             item['normalized_price'] = self._calculate_normalization(item['name'], item['unit_price'], item['unit_type'], item['quantity'])
         return items
 

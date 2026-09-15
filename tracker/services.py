@@ -184,6 +184,11 @@ class ReceiptService:
                     if prod.category and prod.category.name == 'Geral' and cat.name != 'Geral':
                         prod.category = cat
                         changed = True
+                    # Backfill the store-independent NCM tax code when missing
+                    scraped_ncm = re.sub(r'\D', '', str(i.get('ncm', '') or ''))
+                    if scraped_ncm and len(scraped_ncm) == 8 and not prod.ncm:
+                        prod.ncm = scraped_ncm
+                        changed = True
                     if changed:
                         prod.save()
             

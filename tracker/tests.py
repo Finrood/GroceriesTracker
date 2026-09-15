@@ -628,3 +628,61 @@ class StoreChainTests(TestCase):
             data['receipt']['access_key'] = '5' * 44
             r2 = ReceiptService.save_scraped_data(dict(data), 'http://x/2', user)
         self.assertEqual(r1.store_id, r2.store_id)
+
+
+class NcmExtractionTests(TestCase):
+    def test_row_ncm_extracted(self):
+        from tracker.scraper import NFCeScraper
+        from bs4 import BeautifulSoup as BS
+        s = NFCeScraper()
+        html = ('<table id="tabResult"><tr><td>QUEIJO MINAS (Código: 123) NCM: 04061010</td>'
+                '<td>1</td><td>UN</td><td>10,00</td><td>10,00</td></tr></table>')
+        items = s._parse_items_robust(BS(html, 'html.parser'), '')
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['ncm'], '04061010')
+
+    def test_row_without_ncm_defaults_empty(self):
+        from tracker.scraper import NFCeScraper
+        from bs4 import BeautifulSoup as BS
+        s = NFCeScraper()
+        html = ('<table id="tabResult"><tr><td>BANANA KG (Código: 2904)</td>'
+                '<td>1</td><td>KG</td><td>5,00</td><td>5,00</td></tr></table>')
+        items = s._parse_items_robust(BS(html, 'html.parser'), '')
+        self.assertEqual(items[0]['ncm'], '')
+
+    def test_ncm_upgrades_category_from_geral(self):
+        from tracker.scraper import NFCeScraper
+        self.assertEqual(NFCeScraper.category_for_ncm('04061010'), 'Laticínios')
+        self.assertEqual(NFCeScraper.category_for_ncm('22021000'), 'Bebidas')
+        self.assertIsNone(NFCeScraper.category_for_ncm(''))
+        self.assertIsNone(NFCeScraper.category_for_ncm('99999999'))
+
+    def test_import_stores_and_backfills_ncm(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        user = User.objects.create_user(username='ncm_user', password='p')
+        base = {'access_key': '', 'issue_date': tz.now(), 'series': '1',
+                'number': '1', 'total_amount': D('10'), 'discount': 0,
+                'payment_method': 'X', 'tax_federal': 0, 'tax_state': 0,
+                'tax_municipal': 0, 'consumer_cpf': None}
+        store = {'name': 'NCM Store', 'cnpj': '66666666000166', 'city': 'C',
+                 'neighborhood': 'N', 'street': 'S'}
+        item = {'name': 'MYSTERY ITEM XYZ', 'quantity': D('1'), 'unit_price': D('10'),
+                'total_price': D('10'), 'unit_type': 'UN', 'category': 'Geral',
+                'code_gtin': '', 'internal_code': '99991', 'ncm': '04061010'}
+        with patch('tracker.services.async_task'):
+            ReceiptService.save_scraped_data(
+                {'store': store, 'receipt': dict(base, access_key='6' * 44), 'items': [item]},
+                'http://x/1', user)
+        prod = Product.objects.get(name='MYSTERY ITEM XYZ')
+        self.assertEqual(prod.ncm, '04061010')
+        # Second import without NCM must not wipe it; with NCM fills empty
+        prod.ncm = ''
+        prod.save()
+        item2 = dict(item, ncm='04061010')
+        with patch('tracker.services.async_task'):
+            ReceiptService.save_scraped_data(
+                {'store': store, 'receipt': dict(base, access_key='7' * 44), 'items': [item2]},
+                'http://x/2', user)
+        prod.refresh_from_db()
+        self.assertEqual(prod.ncm, '04061010')
