@@ -1,10 +1,20 @@
 # Django
-# db.sqlite3 (Removed from ignore to allow data portability)
+# Runtime data is environment-specific: never commit the live database,
+# media or collected static files. Historic sample data is preserved on the
+# git tag "sample-data" (git checkout sample-data -- db.sqlite3 media).
+db.sqlite3
+*.sqlite3
+media/
+staticfiles/
 django_cache/
 error.log
-staticfiles/
-# media/ (Removed from ignore to allow product images portability)
 *.log
+
+# Local infra / backups (Raspberry Pi deployment only)
+backup_apps.sh
+verify_backup.sh
+*.pre-*
+.env.bak*
 
 # Python
 __pycache__/

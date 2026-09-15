@@ -90,8 +90,32 @@ The stack ships production-ready defaults for running behind a TLS-terminating p
 *   `tracker/services.py`: Business logic for Analytics, Smart Cart, and Receipt processing.
 *   `tracker/enrichment.py`: External API integration for product metadata.
 *   `tracker/models.py`: Robust schema with normalization for units (e.g., converting '5KG' to '5kg').
-*   `media/`: Persistent storage for product images.
-*   `db.sqlite3`: Included in the repository for immediate data portability.
+*   `media/`: Persistent storage for product images (runtime data, not in git — see below).
+*   `db.sqlite3`: Your live database (runtime data, not in git — see below).
+
+### Runtime data vs. git
+The live database and product images are **not tracked** anymore, so `git pull`
+can never clobber them. Historic sample data (a populated `db.sqlite3` +
+`media/products/`) is preserved on the **`sample-data`** git tag:
+```bash
+git checkout sample-data -- db.sqlite3 media   # restore sample data
+```
+
+### Updating an existing deployment (git-pull flow)
+If the deployment directory is a git clone of this repo (e.g.
+`/opt/appdata/groceries` on the Raspberry Pi), updating is one command:
+```bash
+cd /opt/appdata/groceries
+./deploy.sh        # = git pull --ff-only && docker compose build && up -d + health wait
+```
+Or manually:
+```bash
+git pull --ff-only
+docker compose build && docker compose up -d
+docker compose run --rm --no-deps web python manage.py test   # optional sanity check
+```
+Runtime files (`db.sqlite3`, `.env`, `media/`, `staticfiles/`, `django_cache/`)
+are git-ignored and survive every pull, build and container recreation.
 
 ---
 
