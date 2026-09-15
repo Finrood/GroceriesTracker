@@ -21,12 +21,28 @@
     </div>
     <div class="card" style="margin-bottom: 0; border-bottom: 4px solid var(--accent);">
         <p class="text-muted font-bold" style="text-transform: uppercase; font-size: 0.75rem; margin-bottom: 0.5rem;">Total Saved</p>
-        <p style="font-size: 2rem; font-weight: 800;">R$ {{ monthly_raw.0.total_discount|floatformat:2 }}</p>
+        <p style="font-size: 2rem; font-weight: 800;">R$ {{ promo_saved|floatformat:2 }}</p>
+        <small class="text-muted font-bold">{{ promo_rate|floatformat:1 }}% off gross across {{ trip_count }} trips</small>
     </div>
     <div class="card" style="margin-bottom: 0; border-bottom: 4px solid var(--danger);">
         <p class="text-muted font-bold" style="text-transform: uppercase; font-size: 0.75rem; margin-bottom: 0.5rem;">Tax Impact</p>
         <p style="font-size: 2rem; font-weight: 800;">{{ tax_percentage|floatformat:1 }}%</p>
         <small class="text-muted font-bold">R$ {{ total_tax|floatformat:2 }} contributed</small>
+    </div>
+</div>
+
+<div class="stats-grid grid grid-cols-3 gap-6 mb-4">
+    <div class="card" style="margin-bottom: 0;">
+        <p class="text-muted font-bold" style="text-transform: uppercase; font-size: 0.75rem; margin-bottom: 0.5rem;">🛒 Trips</p>
+        <p style="font-size: 2rem; font-weight: 800;">{{ trip_count }}</p>
+    </div>
+    <div class="card" style="margin-bottom: 0;">
+        <p class="text-muted font-bold" style="text-transform: uppercase; font-size: 0.75rem; margin-bottom: 0.5rem;">🎫 Avg Ticket</p>
+        <p style="font-size: 2rem; font-weight: 800;">R$ {{ avg_ticket|floatformat:2 }}</p>
+    </div>
+    <div class="card" style="margin-bottom: 0;">
+        <p class="text-muted font-bold" style="text-transform: uppercase; font-size: 0.75rem; margin-bottom: 0.5rem;">📦 Items / Trip</p>
+        <p style="font-size: 2rem; font-weight: 800;">{{ avg_items|floatformat:1 }}</p>
     </div>
 </div>
 
@@ -50,6 +66,26 @@
         <h3 class="card-title">📊 Spend by Category</h3>
         <p class="text-muted mb-4" style="font-size: 0.8rem;">A breakdown of your budget by department. Use this to see if you are spending more on "Luxury" categories than intended.</p>
         <div id="categoryChart" class="skeleton" style="height: 300px;"></div>
+    </div>
+</div>
+
+<div class="card" style="padding: 0; overflow: hidden;">
+    <div class="card-header" style="padding: 1.5rem; border-bottom: 1px solid var(--border); background: #fafafa; margin-bottom: 0;">
+        <h3 class="card-title" style="margin: 0;">🏪 Share of Wallet by Chain</h3>
+        <span class="text-muted font-bold" style="font-size: 0.75rem;">Where the money goes</span>
+    </div>
+    <div style="padding: 1.5rem; display: flex; flex-direction: column; gap: 0.75rem;">
+        {% for c in chain_share %}
+        <div class="flex items-center gap-3">
+            <div class="text-sm" style="width: 180px; font-weight: 700;">{{ c.name|truncatechars:22 }}</div>
+            <div style="flex: 1; background: #f1f5f9; border-radius: 6px; height: 18px;">
+                <div style="width: {{ c.pct }}%; background: var(--secondary); border-radius: 6px; height: 18px;"></div>
+            </div>
+            <div class="text-sm" style="min-width: 120px; text-align: right; font-weight: 700;">R$ {{ c.spend|floatformat:2 }} ({{ c.pct }}%)</div>
+        </div>
+        {% empty %}
+        <p class="text-muted">No receipts yet.</p>
+        {% endfor %}
     </div>
 </div>
 

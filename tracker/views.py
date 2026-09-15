@@ -361,6 +361,25 @@ def dashboard(request):
     total_spent = receipt_qs.aggregate(sum=Sum(F('total_amount') - F('discount')))['sum'] or Decimal('0.00')
     total_tax = receipt_qs.aggregate(sum=Sum(F('tax_federal')+F('tax_state')+F('tax_municipal')))['sum'] or Decimal('0.00')
     tax_percentage = (total_tax / total_spent * 100) if total_spent > 0 else 0
+
+    # Trip fundamentals + lifetime promo capture (the old 'Total Saved' card
+    # showed only the latest month's discount while labeled as a total).
+    trip_count = receipt_qs.count()
+    gross = receipt_qs.aggregate(sum=Sum('total_amount'))['sum'] or Decimal('0.00')
+    promo_saved = receipt_qs.aggregate(sum=Sum('discount'))['sum'] or Decimal('0.00')
+    promo_rate = (promo_saved / gross * 100) if gross > 0 else 0
+    avg_ticket = (total_spent / trip_count) if trip_count else Decimal('0.00')
+    total_items = ReceiptItem.objects.filter(receipt__in=receipt_qs).aggregate(
+        sum=Sum('quantity'))['sum'] or 0
+    avg_items = (float(total_items) / trip_count) if trip_count else 0
+
+    # Share of wallet by chain (unchained stores fall back to own name).
+    chain_rows = receipt_qs.annotate(
+        wallet=Coalesce('store__chain__name', 'store__name')
+    ).values('wallet').annotate(spend=Sum(F('total_amount') - F('discount'))).order_by('-spend')
+    chain_share = [{'name': r['wallet'], 'spend': float(r['spend']),
+                    'pct': round(float(r['spend']) / float(total_spent) * 100, 1) if total_spent > 0 else 0}
+                   for r in chain_rows]
     
     best_value_products = product_qs.annotate(
         best_name=Coalesce('display_name', 'name'),
@@ -372,9 +391,11 @@ def dashboard(request):
         'discount_data': json.dumps(discount_data), 'category_labels': json.dumps(category_labels), 
         'category_data': json.dumps(category_data), 'weekday_labels': json.dumps(weekday_labels), 
         'weekday_data': json.dumps(weekday_data), 'brand_labels': json.dumps(brand_labels), 
-        'brand_data': json.dumps(brand_data), 'store_perf': store_perf, 'total_spent': total_spent, 
-        'total_tax': total_tax, 'tax_percentage': tax_percentage, 'monthly_raw': monthly_raw, 
-        'best_value_products': best_value_products
+        'brand_data': json.dumps(brand_data), 'store_perf': store_perf, 'total_spent': total_spent,
+        'total_tax': total_tax, 'tax_percentage': tax_percentage, 'monthly_raw': monthly_raw,
+        'best_value_products': best_value_products,
+        'trip_count': trip_count, 'avg_ticket': avg_ticket, 'avg_items': round(avg_items, 1),
+        'promo_saved': promo_saved, 'promo_rate': promo_rate, 'chain_share': chain_share,
     }
     cache.set(cache_key, context, 600)
     return render(request, 'tracker/dashboard.html', context)

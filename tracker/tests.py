@@ -1284,3 +1284,39 @@ class MoversSignalsBasketTests(TestCase):
         self.assertEqual(len(res['coverage']), 3)
         self.assertEqual(res['basket_size'], 2)
         self.assertGreater(res['totals'][-1], 0)  # current month has the riser
+
+
+class DashboardBasicsTests(TestCase):
+    def test_dashboard_trip_and_wallet_metrics(self):
+        from django.core.cache import cache
+        cache.clear()  # FileBasedCache is shared across test runs
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        user = User.objects.create_user(username='dash_basic', password='p')
+        s1 = Store.objects.create(name="Fort Atacadista", cnpj="09477652004000",
+                                  address_city="F")
+        s2 = Store.objects.create(name="KOCH LJ", cnpj="02831172006505",
+                                  address_city="F")
+        from tracker.models import StoreChain
+        c1 = StoreChain.objects.create(name="Fort Atacadista")
+        s1.chain = c1; s1.save()
+        for i, (store, total, disc) in enumerate([(s1, D('100'), D('10')), (s1, D('50'), D('0')), (s2, D('50'), D('5'))]):
+            r = Receipt.objects.create(store=store, user=user, url='http://x',
+                                       access_key=str(i) * 44, issue_date=tz.now(),
+                                       total_amount=total, discount=disc)
+            p = Product.objects.create(name=f"DASH PROD {i}")
+            ReceiptItem.objects.create(receipt=r, product=p, quantity=D('2'),
+                                       unit_type='UN', unit_price=D('10'),
+                                       total_price=D('20'))
+        self.client.force_login(user)
+        resp = self.client.get('/tracker/dashboard/', secure=True)
+        self.assertEqual(resp.status_code, 200)
+        ctx = resp.context
+        self.assertEqual(ctx['trip_count'], 3)
+        self.assertEqual(ctx['avg_ticket'], D('185') / 3)  # paid 90+50+45
+        self.assertEqual(ctx['avg_items'], 2.0)
+        self.assertEqual(ctx['promo_saved'], D('15'))
+        wallets = {c['name']: c for c in ctx['chain_share']}
+        self.assertAlmostEqual(wallets['Fort Atacadista']['spend'], 140.0)
+        self.assertAlmostEqual(wallets['KOCH LJ']['spend'], 45.0)
+        self.assertAlmostEqual(sum(c['pct'] for c in ctx['chain_share']), 100.0, places=0)
