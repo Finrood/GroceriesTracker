@@ -384,7 +384,9 @@ def receipt_detail(request, receipt_id):
 
     # Calculate benchmarks for items
     for item in items:
-        item.benchmark = AnalyticsService.get_price_benchmark(request.user, item.product_id, item.unit_price)
+        item.benchmark = AnalyticsService.get_price_benchmark(
+            request.user, item.product_id, item.unit_price,
+            normalized_price=item.normalized_price)
 
     category_summary = items.values('product__category__name').annotate(total=Sum('total_price'), count=Count('id')).order_by('-total')
     all_categories = Category.objects.all().order_by('name')

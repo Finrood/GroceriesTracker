@@ -686,3 +686,46 @@ class NcmExtractionTests(TestCase):
                 'http://x/2', user)
         prod.refresh_from_db()
         self.assertEqual(prod.ncm, '04061010')
+
+
+class BenchmarkNormalizationTests(TestCase):
+    def _mk_hist(self, user, product, store, unit, norm):
+        from django.utils import timezone as tz
+        PriceHistory.objects.create(user=user, product=product, store=store,
+                                    date=tz.now(), unit_price=unit,
+                                    normalized_price=norm)
+
+    def test_benchmark_uses_normalized_when_available(self):
+        user = User.objects.create_user(username='bench_norm', password='p')
+        store = Store.objects.create(name="S", cnpj="55555555000155")
+        prod = Product.objects.create(name="BENCH PROD")
+        # Same unit price history, but per-kg is stable at 20
+        for _ in range(4):
+            self._mk_hist(user, prod, store, 10, 20)
+        res = AnalyticsService.get_price_benchmark(user, prod.id, 10, normalized_price=20)
+        self.assertEqual(res['label'], 'Great Deal')  # == p25 == p75 floor
+        # Same unit price, but per-kg 40 (smaller pack, worse deal) -> Expensive
+        res2 = AnalyticsService.get_price_benchmark(user, prod.id, 10, normalized_price=40)
+        self.assertEqual(res2['label'], 'Expensive')
+
+    def test_benchmark_falls_back_to_unit_without_norm(self):
+        user = User.objects.create_user(username='bench_unit', password='p')
+        store = Store.objects.create(name="S", cnpj="55555555000155")
+        prod = Product.objects.create(name="BENCH UNIT")
+        for u in [10, 10, 10, 10]:
+            self._mk_hist(user, prod, store, u, None)
+        res = AnalyticsService.get_price_benchmark(user, prod.id, 10)
+        self.assertIsNotNone(res)
+        res_low = AnalyticsService.get_price_benchmark(user, prod.id, 5)
+        self.assertEqual(res_low['label'], 'Great Deal')
+
+    def test_benchmark_needs_three_points(self):
+        user = User.objects.create_user(username='bench_min', password='p')
+        store = Store.objects.create(name="S", cnpj="55555555000155")
+        prod = Product.objects.create(name="BENCH MIN")
+        self._mk_hist(user, prod, store, 10, 10)
+        self.assertIsNone(AnalyticsService.get_price_benchmark(user, prod.id, 10, normalized_price=10))
+
+    def test_timezone_is_sao_paulo(self):
+        from django.conf import settings
+        self.assertEqual(settings.TIME_ZONE, 'America/Sao_Paulo')

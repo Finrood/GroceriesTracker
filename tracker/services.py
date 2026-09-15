@@ -582,22 +582,28 @@ class AnalyticsService:
         return report
 
     @staticmethod
-    def get_price_benchmark(user, product_id, current_price):
+    def get_price_benchmark(user, product_id, current_price, normalized_price=None):
         """
         Benchmarks a price against the history of the product.
+        Size-aware: compares normalized (per-kg/L) prices when available so
+        350g vs 500g variants are comparable; falls back to unit prices.
         Returns: { 'label': 'Great Deal', 'color': '#10b981', 'diff': -15 }
         """
-        history = PriceHistory.objects.filter(user=user, product_id=product_id).values_list('unit_price', flat=True)
-        if len(history) < 3:
+        rows = list(PriceHistory.objects.filter(user=user, product_id=product_id).values_list(
+            'normalized_price', 'unit_price'))
+        norm = sorted([float(n) for n, _ in rows if n is not None])
+        if len(norm) >= 3 and normalized_price is not None:
+            prices, current = norm, float(normalized_price)
+        else:
+            prices = sorted([float(u) for _, u in rows])
+            current = float(current_price)
+        if len(prices) < 3:
             return None # Not enough data to benchmark
-            
-        prices = sorted([float(p) for p in history])
         p25 = prices[int(len(prices) * 0.25)]
         p75 = prices[int(len(prices) * 0.75)]
-        
-        current = float(current_price)
+
         avg = sum(prices) / len(prices)
-        diff_pct = ((current - avg) / avg) * 100
+        diff_pct = ((current - avg) / avg) * 100 if avg else 0
         
         if current <= p25:
             return {'label': 'Great Deal', 'class': 'badge-success', 'icon': '🔥', 'diff': round(diff_pct, 1)}
@@ -761,9 +767,10 @@ class SmartCartService:
             prod = p_data['product']
             qty = p_data['quantity']
             prices = PriceHistory.objects.filter(
-                product=prod, 
+                product=prod,
                 date__gte=timezone.now()-timedelta(days=120)
-            ).values('store__name').annotate(price=Avg('unit_price'))
+            ).values('store__name').annotate(price=Avg('unit_price'),
+                                             norm_price=Avg('normalized_price'))
             
             for p in prices:
                 s_name = p['store__name']
@@ -776,7 +783,8 @@ class SmartCartService:
                     'price': float(p['price']),
                     'quantity': qty,
                     'total': item_total,
-                    'benchmark': AnalyticsService.get_price_benchmark(user, prod.id, p['price'])
+                    'benchmark': AnalyticsService.get_price_benchmark(
+                        user, prod.id, p['price'], normalized_price=p['norm_price'])
                 })
 
         valid_stores = []

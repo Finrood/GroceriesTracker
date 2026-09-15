@@ -228,7 +228,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# Receipts are Brazilian wall-clock (America/Sao_Paulo); grouping by month /
+# weekday must use local time, otherwise UTC shifts buckets near midnight.
+TIME_ZONE = 'America/Sao_Paulo'
 
 USE_I18N = True
 
