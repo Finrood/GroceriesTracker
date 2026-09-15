@@ -13,6 +13,30 @@ from .models import Store, Product, Category, Receipt, ReceiptItem, PriceHistory
 from .enrichment import ProductEnrichmentService
 from .gtin import is_valid_gtin, normalize_code
 
+DASHBOARD_CACHE_VERSION_KEY = 'dashboard_cache_version'
+
+
+def dashboard_cache_version():
+    """Monotonic namespace for dashboard cache keys (FileBasedCache-safe)."""
+    ver = cache.get(DASHBOARD_CACHE_VERSION_KEY)
+    if ver is None:
+        cache.set(DASHBOARD_CACHE_VERSION_KEY, 1)
+        return 1
+    return ver
+
+
+def bump_dashboard_cache():
+    """Invalidate dashboard caches without nuking unrelated cache entries.
+
+    cache.clear() wiped every user's dashboard on each import; a version bump
+    retires old keys (they expire naturally) with a single key write.
+    """
+    try:
+        return cache.incr(DASHBOARD_CACHE_VERSION_KEY)
+    except ValueError:
+        cache.set(DASHBOARD_CACHE_VERSION_KEY, 1)
+        return 1
+
 class ReceiptService:
     @staticmethod
     def generate_readable_name(raw_name):
@@ -225,7 +249,7 @@ class ReceiptService:
                 normalized_price=item.normalized_price
             )
 
-        cache.clear()
+        bump_dashboard_cache()
         return receipt
 
 class AnalyticsService:

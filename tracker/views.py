@@ -7,6 +7,7 @@ from django.http import JsonResponse
 from .scraper import NFCeScraper
 from .models import Store, Product, Category, Receipt, ReceiptItem, ScrapeLog
 from .services import ReceiptService, AnalyticsService, SmartCartService
+from .services import bump_dashboard_cache, dashboard_cache_version
 from .decorators import receipt_owner_required
 from django.db.models import Avg, Sum, Count, F, Q, Min, Max, Window
 from django.db.models.functions import TruncMonth, ExtractWeekDay, Rank, Coalesce
@@ -264,7 +265,8 @@ def link_product_variant(request):
 @login_required
 def dashboard(request):
     user_ids = _get_user_filter(request)
-    cache_key = f"dashboard_stats_{hashlib.md5(str(user_ids).encode()).hexdigest()}"
+    ver = dashboard_cache_version()
+    cache_key = f"dashboard_stats_v{ver}_{hashlib.md5(str(user_ids).encode()).hexdigest()}"
     cached_context = cache.get(cache_key)
     
     if cached_context:
@@ -497,7 +499,7 @@ def product_history(request, product_id):
 def delete_receipt(request, receipt_id):
     receipt = get_object_or_404(Receipt, id=receipt_id)
     receipt.delete()
-    cache.clear() # Clear all to be safe for admin
+    bump_dashboard_cache()
     messages.success(request, "Receipt deleted successfully."); return redirect('receipt_list')
 
 @login_required
@@ -551,7 +553,7 @@ def confirm_refresh(request):
     if existing:
         existing.delete()
     receipt = ReceiptService.save_scraped_data(new_data, url, request.user)
-    cache.clear()
+    bump_dashboard_cache()
     messages.success(request, f"Updated receipt from {receipt.store.name}")
     return redirect('receipt_detail', receipt_id=receipt.id)
 

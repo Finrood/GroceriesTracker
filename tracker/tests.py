@@ -772,3 +772,39 @@ class ScraperDomainTests(TestCase):
         self.assertEqual(s._extract_discount('Desconto: R$ 5,16'), '5,16')
         self.assertEqual(s._extract_discount('Descontos R$: 4,35'), '4,35')
         self.assertEqual(s._extract_discount('no discount'), '0')
+
+
+class DashboardCacheTests(TestCase):
+    def test_bump_monotonic_and_versioned_keys(self):
+        from tracker.services import bump_dashboard_cache, dashboard_cache_version
+        v0 = dashboard_cache_version()
+        v1 = bump_dashboard_cache()
+        self.assertGreaterEqual(v1, v0 + 1)
+        self.assertEqual(dashboard_cache_version(), v1)
+
+    def test_import_bumps_version(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        from tracker.services import dashboard_cache_version
+        user = User.objects.create_user(username='cache_bump', password='p')
+        before = dashboard_cache_version()
+        data = {'store': {'name': 'Cache Store', 'cnpj': '44444444000144', 'city': 'C',
+                          'neighborhood': 'N', 'street': 'S'},
+                'receipt': {'access_key': '8' * 44, 'issue_date': tz.now(),
+                            'series': '1', 'number': '1', 'total_amount': D('5'),
+                            'discount': 0, 'payment_method': 'X', 'tax_federal': 0,
+                            'tax_state': 0, 'tax_municipal': 0, 'consumer_cpf': None},
+                'items': []}
+        with patch('tracker.services.async_task'):
+            ReceiptService.save_scraped_data(data, 'http://x/1', user)
+        self.assertGreater(dashboard_cache_version(), before)
+
+
+class AdminRegistryTests(TestCase):
+    def test_models_registered(self):
+        from django.contrib import admin as dj_admin
+        from tracker.models import (StoreChain, Store, Category, Product,
+                                    ProductMapping, Receipt, PriceHistory, ScrapeLog)
+        for model in (StoreChain, Store, Category, Product, ProductMapping,
+                      Receipt, PriceHistory, ScrapeLog):
+            self.assertIn(model, dj_admin.site._registry)
