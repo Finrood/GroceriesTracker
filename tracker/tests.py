@@ -1103,3 +1103,44 @@ class BrandDictionaryTests(TestCase):
         call_command('fix_brands', '--apply')
         good.refresh_from_db()
         self.assertEqual(good.brand, 'Tirol')
+
+
+class FilterParamRobustnessTests(TestCase):
+    def setUp(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        self.user = User.objects.create_user(username='filter_robust', password='p')
+        self.store = Store.objects.create(name="S", cnpj="11111111000111")
+        for n in range(3):
+            Receipt.objects.create(store=self.store, user=self.user, url='http://x',
+                                   access_key=str(n) * 44, issue_date=tz.now(),
+                                   total_amount=D('10'), number=str(n))
+
+    def test_receipt_list_tolerates_none_store(self):
+        # Exact reported crash: page 2 link renders store=None
+        self.client.force_login(self.user)
+        for url in ['/tracker/receipts/?page=2&q=&store=None&sort=-issue_date',
+                    '/tracker/receipts/?store=None',
+                    '/tracker/receipts/?store=abc',
+                    '/tracker/receipts/?store=12abc',
+                    '/tracker/receipts/?store=']:
+            resp = self.client.get(url, secure=True)
+            self.assertEqual(resp.status_code, 200, url)
+
+    def test_receipt_list_valid_store_still_filters(self):
+        self.client.force_login(self.user)
+        resp = self.client.get(f'/tracker/receipts/?store={self.store.id}', secure=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['page_obj'].paginator.count, 3)
+        other = Store.objects.create(name="Other", cnpj="22222222000122")
+        resp = self.client.get(f'/tracker/receipts/?store={other.id}', secure=True)
+        self.assertEqual(resp.context['page_obj'].paginator.count, 0)
+
+    def test_product_comparison_tolerates_bad_params(self):
+        self.client.force_login(self.user)
+        for url in ['/tracker/market/?category=None',
+                    '/tracker/market/?category=xyz',
+                    '/tracker/market/?sort=nonexistent__field',
+                    '/tracker/market/?sort=-password']:
+            resp = self.client.get(url, secure=True)
+            self.assertEqual(resp.status_code, 200, url)

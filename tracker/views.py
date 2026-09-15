@@ -397,7 +397,12 @@ def receipt_list(request):
 
     if query:
         receipts = receipts.filter(Q(store__name__icontains=query) | Q(access_key__icontains=query) | Q(number__icontains=query))
-    store_id = request.GET.get('store')
+    store_id = request.GET.get('store') or ''
+    # Pagination links render store={{ current_store }}; an unset filter used
+    # to emit the literal string 'None', which then crashed the FK lookup
+    # with ValueError -> 500 on page 2+. Accept digits only.
+    if not store_id.isdigit():
+        store_id = ''
     if store_id: receipts = receipts.filter(store_id=store_id)
 
     receipts = receipts.order_by(sort_by).prefetch_related(
@@ -442,8 +447,16 @@ def receipt_detail(request, receipt_id):
 def product_comparison(request):
     user_ids = _get_user_filter(request)
     query = request.GET.get('q', '')
-    category_id = request.GET.get('category')
+    category_id = request.GET.get('category') or ''
+    # Same hardening as receipt_list: pagination re-emits the raw value, so
+    # 'None'/garbage must degrade to 'no filter', never a ValueError 500.
+    if not category_id.isdigit():
+        category_id = ''
     sort_by = request.GET.get('sort', 'avg_norm_price')
+    if sort_by not in ('avg_norm_price', '-avg_norm_price', 'purchase_count',
+                       '-purchase_count', 'name', '-name', 'total_volume',
+                       '-total_volume'):
+        sort_by = 'avg_norm_price'
     
     products = Product.objects.select_related('category').all()
     if user_ids: products = products.filter(receiptitems__receipt__user_id__in=user_ids)
