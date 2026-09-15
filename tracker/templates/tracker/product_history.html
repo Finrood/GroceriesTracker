@@ -131,6 +131,29 @@
             {% endfor %}
         </div>
     </div>
+
+    {% if canonical_siblings %}
+    <!-- Same item, other stores' codes -->
+    <div class="card" style="grid-column: span 1;">
+        <h3 class="card-title">🔗 Same Item, Other Stores</h3>
+        <p class="text-muted mb-4" style="font-size: 0.8rem;">
+            Grouped by canonical identity: different PLUs/names, one purchasable item.
+        </p>
+        <div class="flex flex-col gap-4">
+            {% for sib in canonical_siblings %}
+            <div class="flex justify-between items-center pb-3 border-b border-dashed border-gray-200">
+                <div>
+                    <a href="{% url 'product_history' product_id=sib.id %}"><strong style="font-size: 0.875rem;">{{ sib.display_name|default:sib.name|truncatechars:30 }}</strong></a><br>
+                    <small class="text-muted">{{ sib.purchases }} purchase{{ sib.purchases|pluralize }}</small>
+                </div>
+                <div style="text-align: right;">
+                    <span class="badge badge-info">R$ {{ sib.min_price|floatformat:2 }}</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
 </div>
 
 <!-- Row 3: Data Lineage -->

@@ -65,7 +65,8 @@ def system_maintenance(request):
     Control panel for background tasks and data enrichment.
     """
     from django_q.models import Task, Schedule, OrmQ
-    from .models import Product, ProductMapping
+    from .models import Product, ProductMapping, CanonicalProduct, CanonicalSuggestion
+    from . import canonical as canonical_svc
     
     # 1. Action Handling
     if request.method == "POST":
@@ -98,6 +99,30 @@ def system_maintenance(request):
                 deleted = ProductMapping.objects.filter(id=m_id).delete()[0]
                 return JsonResponse({'status': 'ok', 'deleted': deleted})
             return JsonResponse({'status': 'error', 'message': 'invalid mapping_id'}, status=400)
+        elif action == 'accept_suggestion':
+            s_id = request.POST.get('suggestion_id', '')
+            if s_id.isdigit():
+                sugg = CanonicalSuggestion.objects.filter(
+                    id=s_id, status=CanonicalSuggestion.PENDING
+                ).select_related('product_a', 'product_b').first()
+                if sugg is None:
+                    return JsonResponse({'status': 'error', 'message': 'not found'}, status=404)
+                ca, cb = sugg.product_a.canonical, sugg.product_b.canonical
+                if ca and cb and ca.id != cb.id:
+                    keeper, absorbed = (ca, cb) if ca.id < cb.id else (cb, ca)
+                    canonical_svc.merge_canonicals(keeper, absorbed)
+                sugg.status = CanonicalSuggestion.ACCEPTED
+                sugg.save(update_fields=['status'])
+                return JsonResponse({'status': 'ok'})
+            return JsonResponse({'status': 'error', 'message': 'invalid suggestion_id'}, status=400)
+        elif action == 'dismiss_suggestion':
+            s_id = request.POST.get('suggestion_id', '')
+            if s_id.isdigit():
+                updated = CanonicalSuggestion.objects.filter(
+                    id=s_id, status=CanonicalSuggestion.PENDING).update(
+                    status=CanonicalSuggestion.DISMISSED)
+                return JsonResponse({'status': 'ok', 'updated': updated})
+            return JsonResponse({'status': 'error', 'message': 'invalid suggestion_id'}, status=400)
         return redirect('system_maintenance')
 
     # 2. Stats
@@ -116,6 +141,23 @@ def system_maintenance(request):
                 'product_name': m.product.display_name or m.product.name
             }
             for m in ProductMapping.objects.filter(is_confirmed=False).select_related('product', 'store')
+        ],
+        'canonical_stats': {
+            'grouped': Product.objects.filter(canonical__isnull=False).count(),
+            'ungrouped': Product.objects.filter(canonical__isnull=True).count(),
+            'buckets': CanonicalProduct.objects.count(),
+        },
+        'pending_suggestions': [
+            {
+                'id': s.id,
+                'name_a': s.product_a.display_name or s.product_a.name,
+                'name_b': s.product_b.display_name or s.product_b.name,
+                'score': round(s.score, 1),
+                'reason': s.reason,
+            }
+            for s in CanonicalSuggestion.objects.filter(
+                status=CanonicalSuggestion.PENDING
+            ).select_related('product_a', 'product_b').order_by('-score')[:30]
         ],
         'schedules': list(Schedule.objects.all().values('name', 'func', 'schedule_type', 'next_run', 'repeats')),
         # Manually construct task list to calculate time_taken (not a DB field)
@@ -482,12 +524,24 @@ def product_history(request, product_id):
     candlestick_data = AnalyticsService.get_product_candlesticks(request.user, product.id)
     all_categories = Category.objects.all().order_by('name')
     all_products = Product.objects.exclude(id=product.id).order_by('display_name', 'name')
-    
+
+    # Canonical siblings: same purchasable item under other stores' codes.
+    canonical_siblings = []
+    if product.canonical_id:
+        sib_qs = Product.objects.filter(canonical_id=product.canonical_id).exclude(id=product.id)
+        if user_ids:
+            sib_qs = sib_qs.filter(receiptitems__receipt__user_id__in=user_ids)
+        canonical_siblings = list(sib_qs.annotate(
+            purchases=Count('receiptitems'),
+            min_price=Min('receiptitems__unit_price'),
+        ).order_by('display_name', 'name')[:10])
+
     context = {
-        'product': product, 'history': history, 
-        'chart_labels': json.dumps(chart_labels), 'chart_data': json.dumps(chart_data), 
+        'product': product, 'history': history,
+        'chart_labels': json.dumps(chart_labels), 'chart_data': json.dumps(chart_data),
         'store_ranking': store_ranking,
         'candlestick_data': json.dumps(candlestick_data),
+        'canonical_siblings': canonical_siblings,
         'all_categories': all_categories,
         'all_products': all_products
     }

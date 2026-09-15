@@ -12,6 +12,7 @@ from rapidfuzz import fuzz, process
 from .models import Store, Product, Category, Receipt, ReceiptItem, PriceHistory, ProductMapping
 from .enrichment import ProductEnrichmentService
 from .gtin import is_valid_gtin, normalize_code
+from . import canonical as canonical_svc
 
 DASHBOARD_CACHE_VERSION_KEY = 'dashboard_cache_version'
 
@@ -216,7 +217,12 @@ class ReceiptService:
                     if changed:
                         prod.save()
             
-            # 5. Stabilize identification for future scrapes
+            # 5b. Cross-store identity: attach to a canonical bucket (fast path:
+            # same GTIN or exact signature twin; fuzzy grouping runs offline).
+            if prod.canonical_id is None:
+                canonical_svc.attach(prod)
+
+            # 6. Stabilize identification for future scrapes
             if internal_code:
                 mapping, created = ProductMapping.objects.get_or_create(
                     user=user,
@@ -611,9 +617,18 @@ class AnalyticsService:
         Benchmarks a price against the history of the product.
         Size-aware: compares normalized (per-kg/L) prices when available so
         350g vs 500g variants are comparable; falls back to unit prices.
+        Cross-store: spans the product's canonical bucket, so the same item
+        bought under another store's PLU still counts.
         Returns: { 'label': 'Great Deal', 'color': '#10b981', 'diff': -15 }
         """
-        rows = list(PriceHistory.objects.filter(user=user, product_id=product_id).values_list(
+        scope = Q(product_id=product_id)
+        try:
+            canon_id = Product.objects.filter(id=product_id).values_list('canonical_id', flat=True).first()
+        except Exception:
+            canon_id = None
+        if canon_id:
+            scope = Q(product__canonical_id=canon_id)
+        rows = list(PriceHistory.objects.filter(user=user).filter(scope).values_list(
             'normalized_price', 'unit_price'))
         norm = sorted([float(n) for n, _ in rows if n is not None])
         if len(norm) >= 3 and normalized_price is not None:

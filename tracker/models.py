@@ -114,6 +114,47 @@ class Category(models.Model):
     def __str__(self):
         return self.name
 
+class CanonicalProduct(models.Model):
+    """Cross-store identity: groups Product rows that are the same purchasable
+    item sold under different store-local codes/names (e.g. produce PLUs).
+
+    Same-GTIN products always share a canonical; PLU-only goods are grouped
+    by signature matching (see tracker/canonical.py), auto or via review.
+    Analytics (benchmarks, history) read through this layer.
+    """
+    name = models.CharField(max_length=255, db_index=True)
+    category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True,
+                                 blank=True, related_name='canonical_products')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.name
+
+
+class CanonicalSuggestion(models.Model):
+    """A proposed merge of two products pending human review."""
+    PENDING = 'pending'
+    ACCEPTED = 'accepted'
+    DISMISSED = 'dismissed'
+    STATUS_CHOICES = [(PENDING, 'Pending'), (ACCEPTED, 'Accepted'), (DISMISSED, 'Dismissed')]
+
+    product_a = models.ForeignKey('Product', on_delete=models.CASCADE, related_name='canonical_suggestions_a')
+    product_b = models.ForeignKey('Product', on_delete=models.CASCADE, related_name='canonical_suggestions_b')
+    score = models.FloatField()
+    reason = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=PENDING, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['product_a', 'product_b'], name='uniq_canon_sugg_pair')
+        ]
+
+    def __str__(self):
+        return f"{self.product_a_id}<->{self.product_b_id} ({self.score:.0f})"
+
+
 class Product(models.Model):
     name = models.CharField(max_length=255, db_index=True)
     display_name = models.CharField(max_length=255, blank=True, null=True)
@@ -130,12 +171,15 @@ class Product(models.Model):
     code_gtin = models.CharField(max_length=14, blank=True, null=True, db_index=True)
     ncm = models.CharField(max_length=8, db_index=True, blank=True)
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, related_name='products')
+    canonical = models.ForeignKey(CanonicalProduct, on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name='products', db_index=True)
 
     class Meta:
         verbose_name = "Product"
         indexes = [
             models.Index(fields=['name']),
             models.Index(fields=['code_gtin']),
+            models.Index(fields=['canonical']),
         ]
 
     def save(self, *args, **kwargs):

@@ -808,3 +808,136 @@ class AdminRegistryTests(TestCase):
         for model in (StoreChain, Store, Category, Product, ProductMapping,
                       Receipt, PriceHistory, ScrapeLog):
             self.assertIn(model, dj_admin.site._registry)
+
+
+class CanonicalGroupingTests(TestCase):
+    def test_signature_strips_sizes_and_promos(self):
+        from tracker.canonical import signature_for, unit_hint_for
+        self.assertEqual(signature_for('ARROZ BCO TIO JOAO 5KG PROMOCAO'), 'ARROZ BCO TIO JOAO')
+        self.assertEqual(unit_hint_for('ARROZ BCO TIO JOAO 5KG'), 'KG')
+        self.assertEqual(unit_hint_for('ABACAXI PEROLA UN'), 'UN')
+        self.assertEqual(unit_hint_for('ITEM SEM UNIDADE'), '')
+
+    def test_gates_block_different_units_and_brands(self):
+        from tracker.canonical import gates_pass
+        cat = Category.objects.create(name="Hortifruti")
+        a = Product.objects.create(name="MAMAO PAPAYA KG", category=cat, brand="")
+        b = Product.objects.create(name="MAMAO PAPAYA UN", category=cat, brand="")
+        self.assertFalse(gates_pass(a, b))
+        c = Product.objects.create(name="LEITE X 1L", category=cat, brand="Tirol")
+        d = Product.objects.create(name="LEITE Y 1L", category=cat, brand="Parmalat")
+        self.assertFalse(gates_pass(c, d))
+
+    def test_preview_groups_same_gtin_and_signatures(self):
+        from tracker import canonical as cs
+        cat = Category.objects.create(name="Hortifruti")
+        a = Product.objects.create(name="CEBOLA BRANCA KG", category=cat)
+        b = Product.objects.create(name="CEBOLA KG", category=cat)
+        c = Product.objects.create(name="MAMAO FORMOSA KG", category=cat)
+        groups, suggestions = cs.preview_groups([a, b, c])
+        bucket = next(v for v in groups.values() if a in v)
+        self.assertIn(b, bucket)
+        self.assertNotIn(c, bucket)
+
+    def test_attach_creates_and_reuses_canonical(self):
+        from tracker import canonical as cs
+        from tracker.models import CanonicalProduct
+        a = Product.objects.create(name="CEBOLA BRANCA KG")
+        canon = cs.attach(a)
+        self.assertIsNotNone(a.canonical_id)
+        self.assertEqual(canon.products.count(), 1)
+        # Exact signature+size twin joins the same bucket (idempotent)
+        b = Product.objects.create(name="CEBOLA BRANCA KG")
+        cs.attach(b)
+        self.assertEqual(b.canonical_id, a.canonical_id)
+        # Re-attaching is a no-op
+        cs.attach(a)
+        self.assertEqual(CanonicalProduct.objects.count(), 1)
+
+    def test_merge_canonicals_moves_members(self):
+        from tracker import canonical as cs
+        from tracker.models import CanonicalProduct
+        a = Product.objects.create(name="MERGE ALPHA KG")
+        b = Product.objects.create(name="MERGE BETA KG")
+        ca, cb = cs.attach(a), cs.attach(b)
+        self.assertNotEqual(ca.id, cb.id)
+        keeper = cs.merge_canonicals(ca, cb)
+        a.refresh_from_db(); b.refresh_from_db()
+        self.assertEqual(a.canonical_id, keeper.id)
+        self.assertEqual(b.canonical_id, keeper.id)
+        self.assertFalse(CanonicalProduct.objects.filter(id=cb.id).exists())
+
+    def test_group_command_writes_and_suggests(self):
+        from django.core.management import call_command
+        from tracker.models import CanonicalProduct, CanonicalSuggestion
+        cat = Category.objects.create(name="Hortifruti")
+        Product.objects.create(name="CEBOLA BRANCA KG", category=cat)
+        Product.objects.create(name="CEBOLA KG", category=cat)
+        call_command('group_canonicals', '--apply')
+        self.assertGreaterEqual(CanonicalProduct.objects.count(), 1)
+        # Every product must have a canonical after apply
+        self.assertEqual(Product.objects.filter(canonical__isnull=True).count(), 0)
+
+    def test_benchmark_spans_canonical(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        from tracker.models import CanonicalProduct
+        user = User.objects.create_user(username='canon_bench', password='p')
+        store = Store.objects.create(name="S", cnpj="33333333000133")
+        canon = CanonicalProduct.objects.create(name="Canon")
+        p1 = Product.objects.create(name="CANON A KG", canonical=canon)
+        p2 = Product.objects.create(name="CANON B KG", canonical=canon)
+        for _ in range(3):
+            PriceHistory.objects.create(user=user, product=p1, store=store,
+                                        date=tz.now(), unit_price=D('10'),
+                                        normalized_price=D('10'))
+        # p2 alone has <3 points -> None without canonical, Fair/Great with it
+        res = AnalyticsService.get_price_benchmark(user, p2.id, 10, normalized_price=10)
+        self.assertIsNotNone(res)
+
+    def test_suggestion_accept_merges(self):
+        from django.core.management import call_command
+        from tracker.models import CanonicalProduct, CanonicalSuggestion
+        cat = Category.objects.create(name="Hortifruti")
+        a = Product.objects.create(name="CEBOLA BRANCA KG", category=cat)
+        b = Product.objects.create(name="CEBOLA KG", category=cat)
+        call_command('group_canonicals', '--apply')
+        a.refresh_from_db(); b.refresh_from_db()
+        # Auto-merged (score 100) -> same canonical, no suggestion needed
+        self.assertEqual(a.canonical_id, b.canonical_id)
+        self.assertEqual(
+            CanonicalSuggestion.objects.filter(status=CanonicalSuggestion.PENDING).count(), 0)
+
+    def test_review_actions_accept_and_dismiss(self):
+        from django.test import RequestFactory
+        from tracker.views import system_maintenance
+        from tracker.models import CanonicalProduct, CanonicalSuggestion
+        from tracker import canonical as cs
+        staff = User.objects.create_user(username='reviewer', password='p', is_staff=True)
+        a = Product.objects.create(name="REVIEW A KG")
+        b = Product.objects.create(name="REVIEW B KG")
+        ca, cb = cs.attach(a), cs.attach(b)
+        sugg = CanonicalSuggestion.objects.create(
+            product_a=a, product_b=b, score=85.0, reason="test")
+        factory = RequestFactory()
+        req = factory.post('/maintenance/', {'action': 'accept_suggestion',
+                                             'suggestion_id': str(sugg.id)})
+        req.user = staff
+        resp = system_maintenance(req)
+        self.assertEqual(resp.status_code, 200)
+        a.refresh_from_db(); b.refresh_from_db()
+        self.assertEqual(a.canonical_id, b.canonical_id)
+        sugg.refresh_from_db()
+        self.assertEqual(sugg.status, CanonicalSuggestion.ACCEPTED)
+        # Dismiss path
+        c = Product.objects.create(name="REVIEW C KG")
+        d = Product.objects.create(name="REVIEW D KG")
+        sugg2 = CanonicalSuggestion.objects.create(
+            product_a=c, product_b=d, score=80.0, reason="test")
+        req2 = factory.post('/maintenance/', {'action': 'dismiss_suggestion',
+                                              'suggestion_id': str(sugg2.id)})
+        req2.user = staff
+        resp2 = system_maintenance(req2)
+        self.assertEqual(resp2.status_code, 200)
+        sugg2.refresh_from_db()
+        self.assertEqual(sugg2.status, CanonicalSuggestion.DISMISSED)
