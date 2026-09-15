@@ -1144,3 +1144,74 @@ class FilterParamRobustnessTests(TestCase):
                     '/tracker/market/?sort=-password']:
             resp = self.client.get(url, secure=True)
             self.assertEqual(resp.status_code, 200, url)
+
+
+class SmartCartCanonicalTests(TestCase):
+    def setUp(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        from tracker.models import CanonicalProduct
+        self.user = User.objects.create_user(username='cart_canon', password='p')
+        self.sa = Store.objects.create(name="Store A", cnpj="11111111000111")
+        self.sb = Store.objects.create(name="Store B", cnpj="22222222000122")
+        self.canon = CanonicalProduct.objects.create(name="Cebola")
+        # Fragmented rows: same onion, different store codes, one bucket
+        self.pa = Product.objects.create(name="CEBOLA BRANCA KG", canonical=self.canon)
+        self.pb = Product.objects.create(name="CEBOLA KG", canonical=self.canon)
+        PriceHistory.objects.create(user=self.user, product=self.pa, store=self.sa,
+                                    date=tz.now(), unit_price=D('9'), normalized_price=D('9'))
+        PriceHistory.objects.create(user=self.user, product=self.pb, store=self.sb,
+                                    date=tz.now(), unit_price=D('5'), normalized_price=D('5'))
+
+    def test_fragmented_rows_plan_as_one_item(self):
+        res = SmartCartService.optimize_cart(self.user, "cebola")
+        rec = res['single_store_recommendation']
+        self.assertIsNotNone(rec)
+        # Both stores priced, cheapest single store is B at 5
+        self.assertEqual(rec['store'], "Store B")
+        self.assertEqual(rec['total'], 5.0)
+        self.assertEqual(len(rec['items']), 1)
+        # Split trip finds the cheapest member row across the bucket
+        split = res['split_trip_recommendation']
+        self.assertEqual(split['total'], 5.0)
+        self.assertEqual(split['items'][0]['store'], "Store B")
+
+    def test_same_bucket_lines_merge_quantities(self):
+        res = SmartCartService.optimize_cart(self.user, "CEBOLA BRANCA\nCEBOLA")
+        rec = res['single_store_recommendation']
+        self.assertEqual(len(rec['items']), 1)
+        self.assertEqual(rec['items'][0]['quantity'], 2)
+        self.assertEqual(rec['total'], 10.0)  # 2 x 5 at Store B
+
+    def test_unmatched_lines_reported(self):
+        res = SmartCartService.optimize_cart(self.user, "cebola\nunobtainium xyz")
+        self.assertEqual(res['unmatched'], ['unobtainium xyz'])
+        self.assertIsNotNone(res['single_store_recommendation'])
+
+    def test_all_unmatched_returns_structured(self):
+        res = SmartCartService.optimize_cart(self.user, "unobtainium xyz")
+        self.assertIsNone(res['single_store_recommendation'])
+        self.assertEqual(res['unmatched'], ['unobtainium xyz'])
+
+
+class SmartCartMatchingTests(TestCase):
+    def test_whole_word_beats_history_count(self):
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        user = User.objects.create_user(username='cart_match', password='p')
+        store = Store.objects.create(name="S", cnpj="11111111000111")
+        fresh = Product.objects.create(name="TOMATE LONGA VIDA KG")
+        extr = Product.objects.create(name="EXT TOM SALSARETTI 300G")
+        # Extract has MORE history (duplicate-line inflation pattern)...
+        for _ in range(5):
+            PriceHistory.objects.create(user=user, product=extr, store=store,
+                                        date=tz.now(), unit_price=D('5'),
+                                        normalized_price=D('5'))
+        PriceHistory.objects.create(user=user, product=fresh, store=store,
+                                    date=tz.now(), unit_price=D('7'),
+                                    normalized_price=D('7'))
+        # ...but 'tomate' must match the fresh tomato (whole word)
+        match = SmartCartService._match_row('tomate')
+        self.assertEqual(match.id, fresh.id)
+        # An unmatched line yields None
+        self.assertIsNone(SmartCartService._match_row('zzz unobtainium'))

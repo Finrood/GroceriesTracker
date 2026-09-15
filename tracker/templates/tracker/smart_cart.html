@@ -90,6 +90,13 @@
                 </div>
                 {% endif %}
 
+                {% if result.unmatched %}
+                <div class="card" style="border-left: 4px solid var(--danger);">
+                    <h3 class="card-title">❓ Not found in your history</h3>
+                    <p class="text-muted text-sm mb-2">No price data for: <strong>{{ result.unmatched|join:", " }}</strong>. Buy them once anywhere and they'll plan next time.</p>
+                </div>
+                {% endif %}
+
                 {% if result.split_trip_recommendation.is_worth_it %}
                 <div style="background: #eff6ff; border: 2px solid var(--secondary); border-radius: 12px; padding: 2rem;">
                     <div class="flex justify-between items-center mb-4 flex-wrap gap-2">

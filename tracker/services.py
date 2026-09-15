@@ -769,56 +769,122 @@ class AnalyticsService:
 
 class SmartCartService:
     @staticmethod
+    def _match_row(item_name):
+        """Best Product row for a list line.
+
+        Rank: whole-word hit first ('tomate' -> fresh tomato, not tomato
+        extract), then most purchase history, then lowest id. The whole-word
+        pass runs Python-side over capped candidates (SQLite has no REGEXP).
+        """
+        cands = list(Product.objects.filter(
+            Q(name__icontains=item_name) | Q(display_name__icontains=item_name)
+        ).annotate(
+            n_hist=Count('price_history'),
+            recent_price=Subquery(
+                PriceHistory.objects.filter(product=OuterRef('pk')).order_by('-date').values('unit_price')[:1]
+            ),
+            store_name=Subquery(
+                PriceHistory.objects.filter(product=OuterRef('pk')).order_by('-date').values('store__name')[:1]
+            ),
+            store_id=Subquery(
+                PriceHistory.objects.filter(product=OuterRef('pk')).order_by('-date').values('store__id')[:1]
+            )
+        ).filter(recent_price__isnull=False).order_by('-n_hist', 'id')[:20])
+        if not cands:
+            return None
+        try:
+            whole = re.compile(r'\b' + re.escape(item_name.strip()) + r'\b', re.IGNORECASE)
+        except re.error:
+            whole = None
+
+        def rank(p):
+            hit = 0
+            if whole is not None:
+                hay = f"{p.name} {p.display_name or ''}"
+                hit = 0 if whole.search(hay) else 1
+            return (hit, -p.n_hist, p.id)
+
+        return sorted(cands, key=rank)[0]
+
+    @staticmethod
+    def _bucket_key(product):
+        # Canonical buckets merge fragmented rows (same onion, two PLUs);
+        # ungrouped rows (or legacy test rows) stay solo under product: key.
+        if product.canonical_id:
+            return f"canon:{product.canonical_id}"
+        return f"product:{product.id}"
+
+    @staticmethod
+    def _bucket_scope(key, product):
+        if key.startswith('canon:'):
+            return Q(product__canonical_id=product.canonical_id)
+        return Q(product_id=product.id)
+
+    @staticmethod
+    def _bucket_label(key, product):
+        """Shortest display name among priced member rows (live, enrichment-proof)."""
+        if not key.startswith('canon:'):
+            return product.display_name or product.name
+        names = list(PriceHistory.objects.filter(
+            product__canonical_id=product.canonical_id
+        ).values_list('product__display_name', 'product__name').distinct())
+        if not names:
+            return product.display_name or product.name
+        return sorted(((len(d or n), (d or n)) for d, n in names))[0][1]
+
+    @staticmethod
     def optimize_cart(user, shopping_list_text):
         """
         Solves the 'Basket Splitter' problem.
         Input: Text list (newline separated).
         Output: Optimization plan.
+        Prices and matches resolve through canonical buckets, so fragmented
+        rows (CEBOLA BRANCA KG @Fort vs CEBOLA KG @Angeloni) plan as one item
+        with per-store averages across every member row.
         """
         items_needed = [line.strip() for line in shopping_list_text.split('\n') if line.strip()]
         if not items_needed: return None
 
-        product_map = {}
+        bucket_map = {}
+        unmatched = []
         for item_name in items_needed:
-            match = Product.objects.filter(
-                Q(name__icontains=item_name) | Q(display_name__icontains=item_name)
-            ).annotate(
-                recent_price=Subquery(
-                    PriceHistory.objects.filter(product=OuterRef('pk')).order_by('-date').values('unit_price')[:1]
-                ),
-                store_name=Subquery(
-                    PriceHistory.objects.filter(product=OuterRef('pk')).order_by('-date').values('store__name')[:1]
-                ),
-                store_id=Subquery(
-                    PriceHistory.objects.filter(product=OuterRef('pk')).order_by('-date').values('store__id')[:1]
-                )
-            ).filter(recent_price__isnull=False).first()
-            
-            if match:
-                if match.id not in product_map:
-                    product_map[match.id] = {'product': match, 'inputs': [item_name], 'quantity': 1}
-                else:
-                    product_map[match.id]['inputs'].append(item_name)
-                    product_map[match.id]['quantity'] += 1
+            match = SmartCartService._match_row(item_name)
+            if match is None:
+                if item_name not in unmatched:
+                    unmatched.append(item_name)
+                continue
+            key = SmartCartService._bucket_key(match)
+            if key not in bucket_map:
+                bucket_map[key] = {'product': match, 'inputs': [item_name], 'quantity': 1}
+            else:
+                bucket_map[key]['inputs'].append(item_name)
+                bucket_map[key]['quantity'] += 1
 
+        if not bucket_map:
+            return {'single_store_recommendation': None, 'alternatives': [],
+                    'split_trip_recommendation': None, 'unmatched': unmatched}
+
+        cutoff = timezone.now() - timedelta(days=120)
         store_baskets = {}
-        for p_id, p_data in product_map.items():
+        for key, p_data in bucket_map.items():
             prod = p_data['product']
             qty = p_data['quantity']
+            scope = SmartCartService._bucket_scope(key, prod)
+            label = SmartCartService._bucket_label(key, prod)
             prices = PriceHistory.objects.filter(
-                product=prod,
-                date__gte=timezone.now()-timedelta(days=120)
+                scope,
+                date__gte=cutoff
             ).values('store__name').annotate(price=Avg('unit_price'),
                                              norm_price=Avg('normalized_price'))
-            
+
             for p in prices:
                 s_name = p['store__name']
                 if s_name not in store_baskets: store_baskets[s_name] = {'total': 0, 'items': []}
                 item_total = float(p['price']) * qty
                 store_baskets[s_name]['total'] += item_total
                 store_baskets[s_name]['items'].append({
-                    'item': ", ".join(p_data['inputs']), 
-                    'product': prod.display_name or prod.name, 
+                    'item': ", ".join(p_data['inputs']),
+                    'product': label,
                     'price': float(p['price']),
                     'quantity': qty,
                     'total': item_total,
@@ -827,35 +893,37 @@ class SmartCartService:
                 })
 
         valid_stores = []
-        unique_item_count = len(product_map)
+        unique_item_count = len(bucket_map)
         for s, data in store_baskets.items():
             if len(data['items']) >= unique_item_count * 0.5:
                 data['store'] = s
                 data['missing_count'] = unique_item_count - len(data['items'])
                 valid_stores.append(data)
-        
+
         valid_stores.sort(key=lambda x: x['total'])
-        
-        # --- NEW: Split-Trip Logic ---
+
+        # --- Split-Trip Logic ---
         split_trip = {'items': [], 'total': 0, 'savings': 0}
         best_single_total = valid_stores[0]['total'] if valid_stores else 0
-        
-        for p_id, p_data in product_map.items():
+
+        for key, p_data in bucket_map.items():
             prod = p_data['product']
             qty = p_data['quantity']
-            # Find the absolute best price ever recorded for this product
+            scope = SmartCartService._bucket_scope(key, prod)
+            label = SmartCartService._bucket_label(key, prod)
+            # Absolute cheapest store for this bucket (any member row).
             best_price_record = PriceHistory.objects.filter(
-                product=prod,
-                date__gte=timezone.now()-timedelta(days=120)
+                scope,
+                date__gte=cutoff
             ).values('store__name', 'unit_price', 'date').order_by('unit_price').first()
-            
+
             if best_price_record:
                 # Calculate Confidence
                 record_date = best_price_record['date']
                 if hasattr(record_date, 'date'): record_date = record_date.date()
-                
+
                 days_old = (timezone.now().date() - record_date).days
-                if days_old <= 7: 
+                if days_old <= 7:
                     confidence = {'label': 'High', 'class': 'badge-success', 'score': 100}
                 elif days_old <= 21:
                     confidence = {'label': 'Medium', 'class': 'badge-info', 'score': 70}
@@ -865,7 +933,7 @@ class SmartCartService:
                 item_total = float(best_price_record['unit_price']) * qty
                 split_trip['total'] += item_total
                 split_trip['items'].append({
-                    'product': prod.display_name or prod.name,
+                    'product': label,
                     'store': best_price_record['store__name'],
                     'price': float(best_price_record['unit_price']),
                     'quantity': qty,
@@ -873,7 +941,7 @@ class SmartCartService:
                     'date': best_price_record['date'],
                     'confidence': confidence
                 })
-        
+
         if best_single_total > 0:
             split_trip['savings'] = best_single_total - split_trip['total']
             # Only suggest split trip if savings are significant (> 5% of total)
@@ -884,7 +952,8 @@ class SmartCartService:
         return {
             'single_store_recommendation': valid_stores[0] if valid_stores else None,
             'alternatives': valid_stores[1:3],
-            'split_trip_recommendation': split_trip if split_trip['items'] else None
+            'split_trip_recommendation': split_trip if split_trip['items'] else None,
+            'unmatched': unmatched
         }
 
 class ProductMatchingService:
