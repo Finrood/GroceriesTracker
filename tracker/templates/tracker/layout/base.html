@@ -180,7 +180,7 @@
         // Auto-show Django messages as toasts
         {% if messages %}
             {% for message in messages %}
-                showToast("{{ message }}", "{{ message.tags }}");
+                showToast("{{ message|escapejs }}", "{{ message.tags|escapejs }}");
             {% endfor %}
         {% endif %}
 

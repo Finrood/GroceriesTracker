@@ -1449,3 +1449,66 @@ class FetchIpcaSeriesTests(TestCase):
         mock_get.return_value.raise_for_status = lambda: None
         out = AnalyticsService._fetch_ipca_series(433)
         self.assertEqual(out, {'2021-03': 0.93})
+
+
+class RobustnessSweepTests(TestCase):
+    def test_toast_escapes_quotes_for_js(self):
+        """Store names with quotes must not break the toast JS string."""
+        user = User.objects.create_user(username='toast_q', password='p')
+        self.client.force_login(user)
+        resp = self.client.post('/tracker/categories/add/',
+                                {'name': 'Q"X'}, secure=True, follow=True)
+        self.assertEqual(resp.status_code, 200)
+        # escapejs renders " as \u0022 inside the script block: the
+        # toast call stays a valid JS string (the &quot; in the rename
+        # input elsewhere on the page is correct HTML-attribute escaping)
+        self.assertContains(
+            resp, 'showToast("Category \\u0027Q\\u0022X\\u0027 created.", "success");')
+
+    def test_confirm_refresh_rejects_missing_url(self):
+        """Missing url must redirect, not raise TypeError -> 500."""
+        user = User.objects.create_user(username='nourl', password='p')
+        self.client.force_login(user)
+        resp = self.client.post('/tracker/confirm_refresh/', {}, secure=True)
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp['Location'].endswith('/tracker/'))
+
+    def test_refresh_failure_hides_internals(self):
+        """SEFAZ error detail must stay in logs, not in the flash message."""
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        user = User.objects.create_user(username='ref_fail', password='p')
+        store = Store.objects.create(name="S", cnpj="11111111000111")
+        receipt = Receipt.objects.create(
+            store=store, user=user, url='https://sat.sef.sc.gov.br/x',
+            access_key='1' * 44, issue_date=tz.now(), total_amount=D('10'))
+        self.client.force_login(user)
+        with patch('tracker.views.NFCeScraper.scrape_url',
+                   side_effect=Exception('SECRET-INTERNALS-12345')):
+            resp = self.client.post(f'/tracker/receipt/{receipt.id}/refresh/',
+                                    secure=True, follow=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'SECRET-INTERNALS-12345')
+        self.assertContains(resp, 'Refresh failed.')
+
+    def test_index_has_no_dead_duplicate_modal(self):
+        """The duplicate modal (never fed by any view) was removed."""
+        user = User.objects.create_user(username='nomodal', password='p')
+        self.client.force_login(user)
+        resp = self.client.get('/tracker/', secure=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'duplicateModal')
+        self.assertNotContains(resp, 'force_update')
+
+    def test_maintenance_clears_expired_sessions(self):
+        """Daily maintenance must purge expired sessions."""
+        from django.contrib.sessions.backends.db import SessionStore
+        from tracker.tasks import maintenance_requeue_enrichment
+        store = SessionStore()
+        store['k'] = 'v'
+        store.set_expiry(-1)
+        store.save()
+        key = store.session_key
+        with patch('tracker.tasks.async_task'):
+            maintenance_requeue_enrichment(batch_size=0)
+        self.assertFalse(SessionStore().exists(key))

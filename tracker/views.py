@@ -624,12 +624,17 @@ def refresh_receipt(request, receipt_id):
         scraper = NFCeScraper(); new_data = scraper.scrape_url(receipt.url); diff = _generate_receipt_diff(receipt, new_data)
         return render(request, 'tracker/refresh_preview.html', {'receipt': receipt, 'new_data': new_data, 'diff': diff, 'is_duplicate': False})
     except Exception as e:
-        messages.error(request, f"Refresh failed: {str(e)}"); return redirect('receipt_detail', receipt_id=receipt.id)
+        logger.error(f"Refresh failed for receipt {receipt_id}: {e}", exc_info=True)
+        messages.error(request, "Refresh failed. Check that the SEFAZ page is still available and try again.")
+        return redirect('receipt_detail', receipt_id=receipt.id)
 
 @login_required
 @require_POST
 def confirm_refresh(request):
     url = request.POST.get('url')
+    if not url:
+        messages.error(request, "Missing receipt URL for refresh.")
+        return redirect('index')
     scraper = NFCeScraper()
     new_data = scraper.scrape_url(url)
     access_key = new_data['receipt']['access_key']

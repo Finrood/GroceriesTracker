@@ -1,5 +1,6 @@
 from django_q.models import Task
 from django_q.tasks import async_task
+from django.core.management import call_command
 import os
 from django.db.models import Q
 from django.utils import timezone
@@ -63,6 +64,7 @@ def maintenance_requeue_enrichment(batch_size=100):
     Bypasses the 7-day rule if the metadata is completely empty.
     """
     prune_completed_tasks()
+    call_command('clearsessions', verbosity=0)
 
     # 1. Critical: Missing all metadata (no 7-day rule here)
     critical_products = Product.objects.filter(metadata={}).distinct()[:batch_size]
