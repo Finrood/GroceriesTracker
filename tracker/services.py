@@ -1,6 +1,6 @@
 from django.db import transaction, connection
 from django.db.models import Avg, Min, Max, StdDev, Window, F, Sum, Count, Q, Subquery, OuterRef
-from django.db.models.functions import TruncMonth, Lag, Coalesce
+from django.db.models.functions import TruncMonth, Lag, Coalesce, RowNumber
 from django.core.cache import cache
 from django.utils import timezone
 from decimal import Decimal
@@ -524,12 +524,12 @@ class AnalyticsService:
 
         suggestions = []
         # Group by brand to limit search space
-        brands = lone_products.values_list('brand', flat=True).distinct()
-        
-        for brand in brands:
-            if not brand or brand == 'Generic': continue
-            
-            prods = list(lone_products.filter(brand=brand))
+        brands = {}
+        for product in lone_products:
+            if not product.brand or product.brand == 'Generic': continue
+            brands.setdefault(product.brand, []).append(product)
+
+        for prods in brands.values():
             for i in range(len(prods)):
                 for j in range(i + 1, len(prods)):
                     p1, p2 = prods[i], prods[j]
@@ -631,6 +631,32 @@ class AnalyticsService:
             scope = Q(product__canonical_id=canon_id)
         rows = list(PriceHistory.objects.filter(user=user).filter(scope).values_list(
             'normalized_price', 'unit_price'))
+        return AnalyticsService._price_benchmark_from_rows(rows, current_price, normalized_price)
+
+    @staticmethod
+    def get_price_benchmarks(user, items):
+        items = list(items)
+        if not items:
+            return {}
+        canonical_ids = {item.product.canonical_id for item in items if item.product.canonical_id}
+        product_ids = {item.product_id for item in items if not item.product.canonical_id}
+        rows = PriceHistory.objects.filter(user=user).filter(
+            Q(product__canonical_id__in=canonical_ids) | Q(product_id__in=product_ids)
+        ).values_list('product_id', 'product__canonical_id', 'normalized_price', 'unit_price')
+        buckets = {}
+        for product_id, canonical_id, normalized, unit in rows:
+            key = ('canonical', canonical_id) if canonical_id else ('product', product_id)
+            buckets.setdefault(key, []).append((normalized, unit))
+        benchmarks = {}
+        for item in items:
+            canonical_id = item.product.canonical_id
+            key = ('canonical', canonical_id) if canonical_id else ('product', item.product_id)
+            benchmarks[item.pk] = AnalyticsService._price_benchmark_from_rows(
+                buckets.get(key, []), item.unit_price, item.normalized_price)
+        return benchmarks
+
+    @staticmethod
+    def _price_benchmark_from_rows(rows, current_price, normalized_price=None):
         norm = sorted([float(n) for n, _ in rows if n is not None])
         if len(norm) >= 3 and normalized_price is not None:
             prices, current = norm, float(normalized_price)
@@ -737,11 +763,26 @@ class AnalyticsService:
         Calculates the change in cost for a 'Standard Basket' 
         (top 10 items by frequency) across different stores.
         """
-        top_items = Product.objects.filter(receiptitems__receipt__user=user).annotate(
+        top_items = list(Product.objects.filter(receiptitems__receipt__user=user).annotate(
             freq=Count('receiptitems')
-        ).order_by('-freq')[:10]
-        
-        stores = Store.objects.filter(receipts__user=user).distinct()
+        ).order_by('-freq', 'pk').values_list('pk', flat=True)[:10])
+
+        stores = list(Store.objects.filter(receipts__user=user).distinct())
+        if not top_items or not stores:
+            return []
+        observations = PriceHistory.objects.filter(
+            user=user, product_id__in=top_items, store_id__in=[store.pk for store in stores]
+        ).annotate(
+            observation_rank=Window(
+                expression=RowNumber(),
+                partition_by=[F('user_id'), F('product_id'), F('store_id')],
+                order_by=[F('date').desc(), F('pk').desc()]
+            )
+        ).filter(observation_rank__lte=2).order_by('store_id', 'product_id', 'observation_rank').values_list(
+            'store_id', 'product_id', 'unit_price')
+        price_pairs = {}
+        for store_id, product_id, unit_price in observations:
+            price_pairs.setdefault((store_id, product_id), []).append(unit_price)
         drift_report = []
         
         for store in stores:
@@ -749,11 +790,11 @@ class AnalyticsService:
             previous_total = 0
             count = 0
             
-            for prod in top_items:
-                prices = PriceHistory.objects.filter(product=prod, store=store).order_by('-date')[:2]
+            for product_id in top_items:
+                prices = price_pairs.get((store.pk, product_id), [])
                 if len(prices) >= 2:
-                    current_total += float(prices[0].unit_price)
-                    previous_total += float(prices[1].unit_price)
+                    current_total += float(prices[0])
+                    previous_total += float(prices[1])
                     count += 1
             
             if count > 0 and previous_total > 0:
@@ -919,6 +960,10 @@ class AnalyticsService:
             cache.set(cache_key, out, 7 * 24 * 3600)
             return out
         except Exception:
+            # Cache the failure briefly: an empty dict now re-raises the same
+            # result for 10 min instead of hammering BCB on every page view
+            # while it is down (a 10s timeout x 2 series x every visitor).
+            cache.set(cache_key, {}, 600)
             return {}
 
     @staticmethod

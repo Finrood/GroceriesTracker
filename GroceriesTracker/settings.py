@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 import os
 from pathlib import Path
+from datetime import timedelta
+from django.utils.csp import CSP
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -124,6 +126,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'django_q',
+    'axes',
     'tracker',
 ]
 
@@ -142,6 +145,7 @@ Q_CLUSTER = {
 # Middleware order matters: SecurityMiddleware -> WhiteNoise -> rest.
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'django.middleware.csp.ContentSecurityPolicyMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -149,9 +153,47 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'axes.middleware.AxesMiddleware',
 ]
 
+AUTHENTICATION_BACKENDS = [
+    'axes.backends.AxesStandaloneBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
+AXES_HANDLER = 'axes.handlers.database.AxesDatabaseHandler'
+AXES_FAILURE_LIMIT = 5
+AXES_COOLOFF_TIME = timedelta(minutes=15)
+AXES_LOCKOUT_PARAMETERS = ['username']
+AXES_IPWARE_META_PRECEDENCE_ORDER = ('REMOTE_ADDR',)
+AXES_RESET_ON_SUCCESS = True
+AXES_RESET_COOL_OFF_ON_FAILURE_DURING_LOCKOUT = False
+AXES_HTTP_RESPONSE_CODE = 429
+AXES_DISABLE_ACCESS_LOG = True
+# Single-user app behind one Cloudflare Tunnel IP: lock on username only
+# so X-Forwarded-For spoofing can't bypass or dilute the limit (W006 N/A).
+SILENCED_SYSTEM_CHECKS = [
+    'axes.W006',
+]
+
+SECURE_CSP = {}
+SECURE_CSP_REPORT_ONLY = {
+    'default-src': [CSP.SELF],
+    'script-src': [CSP.SELF, 'https://cdn.jsdelivr.net'],
+    'style-src': [CSP.SELF, 'https://fonts.googleapis.com'],
+    'font-src': [CSP.SELF, 'https://fonts.gstatic.com'],
+    'img-src': [CSP.SELF, 'data:', 'https:'],
+    'connect-src': [CSP.SELF],
+    'object-src': [CSP.NONE],
+    'base-uri': [CSP.SELF],
+    'form-action': [CSP.SELF],
+    'frame-ancestors': [CSP.NONE],
+}
+
 ROOT_URLCONF = 'GroceriesTracker.urls'
+
+LOGIN_REDIRECT_URL = 'index'
+LOGOUT_REDIRECT_URL = 'login'
 
 TEMPLATES = [
     {
@@ -182,6 +224,7 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
         'OPTIONS': {
             'timeout': 60, # Extreme patience for SQLite locks
+            'transaction_mode': 'IMMEDIATE',
             # WAL mode. HISTORY: with WAL + single-file bind mounts, each
             # container got private -wal/-shm sidecars -> split brain (worker
             # couldn't see web's writes). That is fixed: compose now mounts the

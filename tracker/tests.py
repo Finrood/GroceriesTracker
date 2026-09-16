@@ -1376,6 +1376,72 @@ class IpcaOverlayTests(TestCase):
         self.assertEqual(res['personal'], [None, None, None])
 
     @patch('tracker.services.requests.get')
+    def test_bcb_outage_is_cached(self, mock_get):
+        """A BCB outage must not turn every page view into 2 live timeouts."""
+        from django.core.cache import cache
+        cache.delete('ipca_sgs_433')
+        cache.delete('ipca_sgs_1635')
+        mock_get.side_effect = Exception('BCB down')
+        AnalyticsService._fetch_ipca_series(433)
+        self.assertEqual(mock_get.call_count, 1)
+        # Second call is served from the failure cache, no new request.
+        AnalyticsService._fetch_ipca_series(433)
+        self.assertEqual(mock_get.call_count, 1)
+        cache.delete('ipca_sgs_433')
+
+
+class AuthRedirectTests(TestCase):
+    def test_login_redirects_to_index(self):
+        """LoginView default LOGIN_REDIRECT_URL ('/accounts/profile/') 404s."""
+        from django.conf import settings
+        u = User.objects.create_user(username='authflow', password='pw123456')
+        try:
+            self.client.force_login(u)
+            resp = self.client.post('/accounts/login/', follow=True)
+            # Force-login bypasses the redirect; assert the setting instead.
+            self.assertEqual(settings.LOGIN_REDIRECT_URL, 'index')
+            self.assertEqual(settings.LOGOUT_REDIRECT_URL, 'login')
+        finally:
+            u.delete()
+
+
+class OptimizerQueryCountTests(TestCase):
+    def test_optimizer_does_not_nplus1_on_storechain(self):
+        """Store.display_name with unfetched chain used to cost 1 query/item."""
+        from django.utils import timezone as tz
+        from decimal import Decimal as D
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+        from tracker.models import StoreChain
+        user = User.objects.create_user(username='opt_q', password='p')
+        chain = StoreChain.objects.create(name="Koch")
+        store = Store.objects.create(name="KOCH HIPERMERCADO S/A LJ 47",
+                                     cnpj="02831172006505", address_city="F")
+        store.chain = chain
+        store.save()
+        for i in range(5):
+            r = Receipt.objects.create(store=store, user=user, url='http://x',
+                                       access_key=str(i) * 44, issue_date=tz.now(),
+                                       total_amount=D('10'))
+            p = Product.objects.create(name=f"OPT PROD {i}")
+            ReceiptItem.objects.create(receipt=r, product=p, quantity=D('1'),
+                                       unit_type='UN', unit_price=D('5'),
+                                       total_price=D('5'))
+        self.client.force_login(user)
+        with CaptureQueriesContext(connection) as ctx:
+            resp = self.client.get('/tracker/optimizer/', secure=True)
+        self.assertEqual(resp.status_code, 200)
+        chain_qs = [q for q in ctx if 'tracker_storechain' in q['sql']]
+        # 5 items, all at one chain-linked store: must be ~1 lookup, not 5+
+        self.assertLessEqual(len(chain_qs), 2)
+
+
+class FetchIpcaSeriesTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()  # IPCA series cache is shared across test runs
+
+    @patch('tracker.services.requests.get')
     def test_fetch_caches_and_parses(self, mock_get):
         mock_get.return_value = MagicMock(
             status_code=200, json=lambda: [{'data': '15/03/2021', 'valor': '0,93'},

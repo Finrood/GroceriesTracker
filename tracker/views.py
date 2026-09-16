@@ -186,7 +186,11 @@ def shopping_optimizer(request):
     query = request.GET.get('q', '')
     user_ids = _get_user_filter(request)
     
-    items = ReceiptItem.objects.all().select_related('product', 'receipt', 'receipt__store')
+    # select_related through store.chain: Store.display_name would otherwise
+    # issue one StoreChain query per unique store (279 queries on a 281-item
+    # empty-query page; 3 with prefetch).
+    items = ReceiptItem.objects.all().select_related(
+        'product', 'receipt', 'receipt__store', 'receipt__store__chain')
     if user_ids:
         items = items.filter(receipt__user_id__in=user_ids)
     
@@ -453,10 +457,9 @@ def receipt_detail(request, receipt_id):
     if item_query: items = items.filter(product__name__icontains=item_query)
 
     # Calculate benchmarks for items
+    benchmarks = AnalyticsService.get_price_benchmarks(request.user, items)
     for item in items:
-        item.benchmark = AnalyticsService.get_price_benchmark(
-            request.user, item.product_id, item.unit_price,
-            normalized_price=item.normalized_price)
+        item.benchmark = benchmarks[item.pk]
 
     category_summary = items.values('product__category__name').annotate(total=Sum('total_price'), count=Count('id')).order_by('-total')
     all_categories = Category.objects.all().order_by('name')
@@ -592,7 +595,6 @@ def delete_receipt(request, receipt_id):
 
 @login_required
 @require_POST
-@transaction.atomic
 def process_nfce_url(request):
     url = request.POST.get('url')
     if not url: return render(request, 'tracker/index.html', {'error': 'URL is required'})
@@ -626,7 +628,6 @@ def refresh_receipt(request, receipt_id):
 
 @login_required
 @require_POST
-@transaction.atomic
 def confirm_refresh(request):
     url = request.POST.get('url')
     scraper = NFCeScraper()
@@ -635,13 +636,14 @@ def confirm_refresh(request):
     # Ownership check: the receipt is located by the scraped access key, not a
     # URL parameter, so receipt_owner_required does not apply here. Without
     # this, refreshing another user's NFCe URL would delete THEIR receipt.
-    existing = Receipt.objects.filter(access_key=access_key).select_related('user').first()
-    if existing and existing.user != request.user and not request.user.is_staff:
-        raise PermissionDenied("You do not have permission to refresh this receipt.")
-    if existing:
-        existing.delete()
-    receipt = ReceiptService.save_scraped_data(new_data, url, request.user)
-    bump_dashboard_cache()
+    with transaction.atomic():
+        existing = Receipt.objects.filter(access_key=access_key).select_related('user').first()
+        if existing and existing.user != request.user and not request.user.is_staff:
+            raise PermissionDenied("You do not have permission to refresh this receipt.")
+        if existing:
+            existing.delete()
+        receipt = ReceiptService.save_scraped_data(new_data, url, request.user)
+        transaction.on_commit(bump_dashboard_cache)
     messages.success(request, f"Updated receipt from {receipt.store.name}")
     return redirect('receipt_detail', receipt_id=receipt.id)
 

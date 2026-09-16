@@ -1,4 +1,6 @@
+from django_q.models import Task
 from django_q.tasks import async_task
+import os
 from django.db.models import Q
 from django.utils import timezone
 from .models import Product
@@ -41,11 +43,27 @@ def async_enrich_product(product_id, **kwargs):
         logger.error(f"Enrichment task error for product {product_id}: {str(e)}", exc_info=True)
         return error_msg
 
+def prune_completed_tasks(retention_days=None):
+    if retention_days is None:
+        retention_days = os.getenv('TASK_RETENTION_DAYS', '90')
+    if isinstance(retention_days, bool) or not isinstance(retention_days, (int, str)):
+        raise ValueError('TASK_RETENTION_DAYS must be a positive integer')
+    retention_days = int(retention_days)
+    if retention_days <= 0:
+        raise ValueError('TASK_RETENTION_DAYS must be a positive integer')
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    deleted, _ = Task.objects.filter(stopped__isnull=False, stopped__lt=cutoff).delete()
+    logger.info('Maintenance: Pruned %s completed tasks older than %s days.', deleted, retention_days)
+    return deleted
+
+
 def maintenance_requeue_enrichment(batch_size=100):
     """
     Periodic maintenance: Re-enqueues products that are missing metadata.
     Bypasses the 7-day rule if the metadata is completely empty.
     """
+    prune_completed_tasks()
+
     # 1. Critical: Missing all metadata (no 7-day rule here)
     critical_products = Product.objects.filter(metadata={}).distinct()[:batch_size]
     
