@@ -26,5 +26,11 @@ jobs:
       - name: Django system check (deploy)
         run: python manage.py check --deploy
 
+      - name: Collect static files
+        # WhiteNoise uses hashed names (CompressedManifestStaticFilesStorage),
+        # so templates need the manifest that collectstatic generates.
+        # staticfiles/ is git-ignored; production builds it on boot (deploy.sh).
+        run: python manage.py collectstatic --noinput
+
       - name: Test suite
         run: python manage.py test
