@@ -239,6 +239,15 @@ DATABASES = {
     }
 }
 
+# Product enrichment (tracker/enrichment.py). Contact identifies our traffic
+# to Open Food/Beauty Facts (required by their API terms); the Mercado Livre
+# catalog token unlocks GTIN-verified catalog lookups (optional).
+ENRICHMENT_CONTACT = os.getenv(
+    'ENRICHMENT_CONTACT',
+    'GroceriesTracker (+https://github.com/Finrood/GroceriesTracker)',
+)
+MELI_ACCESS_TOKEN = os.getenv('MELI_ACCESS_TOKEN', '')
+
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',

@@ -71,25 +71,30 @@ class AnalyticsBoundaryTests(TestCase):
         self.assertEqual(AnalyticsService.get_shrinkflation_report(self.user), [])
 
 class EnrichmentChainTests(TestCase):
-    @patch('requests.get')
+    @patch('tracker.enrichment.requests.get')
     def test_aggregator_resilience(self, mock_get):
         # 7891097103643 is a real checksum-valid EAN-13 (PLU-like fakes such
         # as 7891234567890 fail validation and must skip the GTIN APIs).
         product = Product.objects.create(name="Test Prod", code_gtin="7891097103643")
-        
-        # Provide enough mocks for the whole chain (OFF, ML, Buscape, Amazon, Cosmos)
-        ml_html = '<div class="ui-search-result__content"><h2 class="ui-search-item__title">Success Name</h2><img class="ui-search-result-image__element" src="http://img.jpg"></div>'
-        mock_get.side_effect = [
-            MagicMock(status_code=500), # OFF
-            MagicMock(status_code=200, text=ml_html), # ML
-            MagicMock(status_code=404), # Buscape
-            MagicMock(status_code=404), # Amazon
-            MagicMock(status_code=403), # Cosmos
-        ]
-        
+
+        ml_html = '<div class="ui-search-result__content"><h2 class="ui-search-item__title">Test Prod Original 500g</h2><img class="ui-search-result-image__element" src="http://img.jpg"></div>'
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            if 'search.pl' in url:
+                resp = MagicMock(status_code=200)
+                resp.json.return_value = {"products": []}
+                return resp
+            if 'openfoodfacts' in url or 'openbeautyfacts' in url:
+                return MagicMock(status_code=500)
+            if 'api.mercadolibre.com' in url:
+                return MagicMock(status_code=403)
+            return MagicMock(status_code=200, text=ml_html, url=url)
+        mock_get.side_effect = fake_get
+
         success = ProductEnrichmentService.enrich_product(product)
         self.assertTrue(success)
-        self.assertEqual(product.display_name, "Success Name")
+        self.assertEqual(product.display_name, "Test Prod Original 500g")
+        self.assertEqual(product.image_url, "http://img.jpg")
 
 class SplitTripOptimizerTests(TestCase):
     def setUp(self):
@@ -157,26 +162,40 @@ class EnrichmentServiceTests(TestCase):
         """Test that if GTIN fails, we try searching by name."""
         # 1. Setup mock response for name search
         from .enrichment import ProductEnrichmentService
-        html_content = """
-            <div class="ui-search-layout__item">
-                <img class="ui-search-result-image__element" src="http://test.com/img.jpg">
-                <h2 class="ui-search-item__title">Full Product Commercial Name</h2>
-            </div>
-        """
-        mock_get.return_value.status_code = 200
-        mock_get.return_value.text = html_content
-        
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            if 'search.pl' in url or 'openfoodfacts' in url or 'openbeautyfacts' in url:
+                resp = MagicMock(status_code=200)
+                resp.json.return_value = {"status": 0, "products": []}
+                return resp
+            if 'api.mercadolibre.com/sites' in url:
+                resp = MagicMock(status_code=200)
+                resp.json.return_value = {"results": [{
+                    "id": "MLB1",
+                    "title": "Simple Name Premium 500g",
+                    "thumbnail": "http://test.com/img-thumb.jpg",
+                    "sold_quantity": 10,
+                }]}
+                return resp
+            if 'api.mercadolibre.com/items' in url:
+                resp = MagicMock(status_code=200)
+                resp.json.return_value = {"pictures": [
+                    {"secure_url": "http://test.com/img-big.jpg"}]}
+                return resp
+            return MagicMock(status_code=404)
+        mock_get.side_effect = fake_get
+
         p = Product.objects.create(name="SIMPLE NAME", display_name="Simple Name")
-        
+
         # We manually trigger enrichment
-        # Note: enrich_product normally returns False if NO codes exist, 
-        # but our new logic allows name search. 
+        # Note: enrich_product normally returns False if NO codes exist,
+        # but our new logic allows name search.
         # I need to ensure the check at the start of enrich_product doesn't block it.
         success = ProductEnrichmentService.enrich_product(p)
-        
+
         self.assertTrue(success)
-        self.assertEqual(p.image_url, "http://test.com/img.jpg")
-        self.assertEqual(p.display_name, "Full Product Commercial Name")
+        self.assertEqual(p.image_url, "http://test.com/img-big.jpg")
+        self.assertEqual(p.display_name, "Simple Name Premium 500g")
 
     def test_heuristic_guessing(self):
         """Test that categories like Hortifruti result in NOVA 1 guessing."""
@@ -191,6 +210,222 @@ class EnrichmentServiceTests(TestCase):
         self.assertEqual(p.metadata.get('nova_group'), 1)
         # Updated key from 'enrichment_source' to 'source_nova_group'
         self.assertEqual(p.metadata.get('source_nova_group'), 'heuristic')
+
+class EnrichmentV2Tests(TestCase):
+    """OFF v2/UA compliance, image confidence, title verification, OBF,
+    ML catalog API, safe filenames and fetch outcomes."""
+
+    def _json_mock(self, payload, status_code=200):
+        resp = MagicMock(status_code=status_code)
+        resp.json.return_value = payload
+        return resp
+
+    @patch('tracker.enrichment.requests.get')
+    def test_off_v2_uses_fields_and_identifying_ua(self, mock_get):
+        from .enrichment import ProductEnrichmentService
+        off_payload = {
+            "status": 1,
+            "product": {
+                "code": "7891097103643",
+                "product_name_pt": "Arroz Branco Tipo 1",
+                "brands": "Tio João, Camil",
+                "nova_group": 3,
+                "nutriscore_grade": "C",
+                "ecoscore_grade": "d",
+                "nutriments": {"sugars_100g": 0.2},
+                "image_front_url": "http://off.test/front.jpg",
+            },
+        }
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            if 'search.pl' in url:
+                return self._json_mock({"products": []})
+            if 'openfoodfacts' in url or 'openbeautyfacts' in url:
+                return self._json_mock(off_payload)
+            return MagicMock(status_code=404)
+        mock_get.side_effect = fake_get
+
+        p = Product.objects.create(name="ARROZ BRANCO", code_gtin="7891097103643")
+        self.assertTrue(ProductEnrichmentService.enrich_product(p))
+
+        off_calls = [c for c in mock_get.call_args_list
+                     if 'openfoodfacts' in c.args[0] and 'search.pl' not in c.args[0]]
+        self.assertTrue(off_calls)
+        url, kwargs = off_calls[0].args[0], off_calls[0].kwargs
+        self.assertIn('/api/v2/product/7891097103643.json', url)
+        self.assertIn('nutriscore_grade', kwargs['params']['fields'])
+        self.assertTrue(kwargs['headers']['User-Agent'].startswith('GroceriesTracker/'))
+        self.assertNotIn('Mozilla', kwargs['headers']['User-Agent'])
+        self.assertEqual(p.display_name, "Arroz Branco Tipo 1")
+        self.assertEqual(p.brand, "Tio João")
+        self.assertEqual(p.metadata['nova_group'], 3)
+        self.assertEqual(p.metadata['nutriscore'], 'c')
+        self.assertEqual(p.metadata['ecoscore'], 'd')
+        self.assertEqual(p.metadata['nutrition'], {"sugars_100g": 0.2})
+        self.assertEqual(p.image_url, "http://off.test/front.jpg")
+        self.assertEqual(p.metadata['source_image_url'], 'off_gtin')
+
+    @patch('tracker.enrichment.requests.get')
+    def test_image_confidence_blocks_downgrade(self, mock_get):
+        """A weak ml_search image must not overwrite an off_gtin image."""
+        from .enrichment import ProductEnrichmentService
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            if 'api.mercadolibre.com/sites' in url:
+                return self._json_mock({"results": [{
+                    "id": "MLB9", "title": "Arroz Branco Tipo 1 5kg",
+                    "thumbnail": "http://ml.test/other-thumb.jpg",
+                    "sold_quantity": 99}]})
+            if 'api.mercadolibre.com/items' in url:
+                return self._json_mock({"pictures": [
+                    {"secure_url": "http://ml.test/other-big.jpg"}]})
+            return MagicMock(status_code=404)
+        mock_get.side_effect = fake_get
+
+        p = Product.objects.create(
+            name="ARROZ BRANCO", display_name="Arroz Branco",
+            image_url="http://off.test/front.jpg",
+            metadata={'source_image_url': 'off_gtin',
+                      'source_display_name': 'off_gtin'})
+        result = ProductEnrichmentService._search_by_name(p)
+        self.assertFalse(result)
+        self.assertEqual(p.image_url, "http://off.test/front.jpg")
+        self.assertEqual(p.display_name, "Arroz Branco")
+
+    @patch('tracker.enrichment.requests.get')
+    def test_title_verification_rejects_mismatch(self, mock_get):
+        """A top result for a different product must be rejected entirely."""
+        from .enrichment import ProductEnrichmentService
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            if 'api.mercadolibre.com/sites' in url:
+                return self._json_mock({"results": [{
+                    "id": "MLB7", "title": "Kit Kat Chocolate Ao Leite 90g",
+                    "thumbnail": "http://ml.test/kitkat.jpg",
+                    "sold_quantity": 500}]})
+            return MagicMock(status_code=404)
+        mock_get.side_effect = fake_get
+
+        p = Product.objects.create(name="ARROZ BRANCO TIPO 1 5KG")
+        self.assertFalse(ProductEnrichmentService._search_by_name(p))
+        self.assertIsNone(p.image_url)
+
+    @patch('tracker.enrichment.requests.get')
+    def test_obf_lookup_for_personal_care(self, mock_get):
+        from .enrichment import ProductEnrichmentService
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            if 'search.pl' in url:
+                return self._json_mock({"products": []})
+            if 'openbeautyfacts' in url:
+                return self._json_mock({"status": 1, "product": {
+                    "code": "7891097103643",
+                    "product_name": "Shampoo Anticaspa Clear",
+                    "image_front_url": "http://obf.test/front.jpg"}})
+            if 'openfoodfacts' in url:
+                return self._json_mock({"status": 0})
+            return MagicMock(status_code=404)
+        mock_get.side_effect = fake_get
+
+        p = Product.objects.create(name="SHAMPOO ANTICASPA 400ML",
+                                   code_gtin="7891097103643")
+        self.assertTrue(ProductEnrichmentService.enrich_product(p))
+        self.assertTrue(any('openbeautyfacts' in c.args[0]
+                            for c in mock_get.call_args_list))
+        self.assertEqual(p.display_name, "Shampoo Anticaspa Clear")
+        self.assertEqual(p.metadata['source_display_name'], 'obf_gtin')
+        self.assertEqual(p.image_url, "http://obf.test/front.jpg")
+
+    @patch('tracker.enrichment.requests.get')
+    def test_meli_catalog_with_token(self, mock_get):
+        from django.test import override_settings
+        from .enrichment import ProductEnrichmentService
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            if 'search.pl' in url:
+                return self._json_mock({"products": []})
+            if 'openfoodfacts' in url or 'openbeautyfacts' in url:
+                return self._json_mock({"status": 0})
+            if 'api.mercadolibre.com/products/search' in url:
+                return self._json_mock({"results": [{
+                    "id": "MLB123", "name": "Leite Integral Tirol 1L",
+                    "pictures": [{"secure_url": "http://ml.test/catalog.jpg"}]}]})
+            if 'api.mercadolibre.com/sites' in url:
+                return self._json_mock({"results": []})
+            return MagicMock(status_code=404)
+        mock_get.side_effect = fake_get
+
+        with override_settings(MELI_ACCESS_TOKEN='test-token'):
+            p = Product.objects.create(name="LEITE INTEGRAL 1L",
+                                       code_gtin="7891097103643")
+            self.assertTrue(ProductEnrichmentService.enrich_product(p))
+        catalog_calls = [c for c in mock_get.call_args_list
+                         if 'products/search' in c.args[0]]
+        self.assertTrue(catalog_calls)
+        self.assertEqual(catalog_calls[0].kwargs['headers']['Authorization'],
+                         'Bearer test-token')
+        self.assertEqual(p.display_name, "Leite Integral Tirol 1L")
+        self.assertEqual(p.image_url, "http://ml.test/catalog.jpg")
+        self.assertEqual(p.metadata['source_image_url'], 'meli_catalog')
+
+    def _png_bytes(self, size):
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        # Noise (not solid color) so the file clears the 5KB sanity floor
+        # even at small dimensions.
+        Image.effect_noise(size, 128).convert('RGB').save(buf, format='PNG')
+        return buf.getvalue()
+
+    @patch('tracker.enrichment.requests.get')
+    def test_uuid_filename_for_gtinless_product(self, mock_get):
+        import tempfile
+        from django.test import override_settings
+        from .enrichment import ProductEnrichmentService
+        resp = MagicMock(status_code=200)
+        resp.content = self._png_bytes((200, 200))
+        resp.headers = {'Content-Type': 'image/png'}
+        mock_get.return_value = resp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(MEDIA_ROOT=tmp):
+                p = Product.objects.create(name="UVA BRANCA SEM SEMENTE 500G")
+                p.image_url = "http://test.com/a.jpg"
+                self.assertTrue(
+                    ProductEnrichmentService.download_local_image(p))
+                self.assertTrue(p.local_image.name.startswith('products/noid-'))
+
+    @patch('tracker.enrichment.requests.get')
+    def test_min_side_rejects_thumbnail(self, mock_get):
+        import tempfile
+        from django.test import override_settings
+        from .enrichment import ProductEnrichmentService
+        resp = MagicMock(status_code=200)
+        resp.content = self._png_bytes((50, 50))
+        resp.headers = {'Content-Type': 'image/png'}
+        mock_get.return_value = resp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(MEDIA_ROOT=tmp):
+                p = Product.objects.create(name="TINY THUMB PRODUCT")
+                p.image_url = "http://test.com/thumb.jpg"
+                self.assertFalse(
+                    ProductEnrichmentService.download_local_image(p))
+                self.assertFalse(bool(p.local_image))
+
+    @patch('tracker.enrichment.requests.get')
+    def test_fetch_json_outcomes(self, mock_get):
+        from .enrichment import ProductEnrichmentService as Svc
+        import requests as rq
+        mock_get.return_value = MagicMock(status_code=404)
+        self.assertEqual(Svc._fetch_json('http://x', retries=0)[1], 'not_found')
+        mock_get.return_value = MagicMock(status_code=403)
+        self.assertEqual(Svc._fetch_json('http://x', retries=0)[1], 'blocked')
+        mock_get.side_effect = rq.Timeout()
+        self.assertEqual(Svc._fetch_json('http://x', retries=0)[1], 'timeout')
+        mock_get.side_effect = None
+        mock_get.return_value = MagicMock(status_code=500)
+        self.assertEqual(Svc._fetch_json('http://x', retries=1)[1], 'http_500')
 
 class AsyncEnrichmentTaskTests(TestCase):
     def setUp(self):

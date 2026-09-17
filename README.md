@@ -134,6 +134,26 @@ refuse to run when the local machine has its own data changes:
 Still git-ignored and safe across pulls/builds: `.env`, `staticfiles/`,
 `django_cache/`, `*.log`, SQLite sidecars (`db.sqlite3-shm/-wal`).
 
+### Data sources & attribution (product enrichment)
+
+New products are enriched in the background (`groceries-worker`, Django-Q2)
+by `tracker/enrichment.py`, highest-confidence source wins per field:
+
+*   **Open Food Facts** (`world.openfoodfacts.org`, free JSON API v2, no key)
+    — names, brands, NOVA, Nutri-Score, Eco-Score, nutrition and front images
+    for packaged food by GTIN. Data © Open Food Facts contributors, available
+    under the **Open Database License (ODbL)**.
+*   **Open Beauty Facts** (same platform/API) — same fields for personal-care
+    and cosmetic GTINs.
+*   **Mercado Livre** — official catalog API when `MELI_ACCESS_TOKEN` is set
+    (GTIN-verified entries; see `.env.example`), otherwise the public search
+    API, otherwise page scraping as a last resort. Marketplace titles are
+    similarity-checked before acceptance, so wrong products are rejected.
+*   Local keyword heuristics fill NOVA groups only when no API has data.
+
+Set `ENRICHMENT_CONTACT` (see `.env.example`) so the APIs can identify our
+traffic per their usage terms.
+
 ---
 
 ## 🤝 Development Conventions
