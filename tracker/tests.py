@@ -349,6 +349,7 @@ class EnrichmentV2Tests(TestCase):
             if 'api.mercadolibre.com/products/search' in url:
                 return self._json_mock({"results": [{
                     "id": "MLB123", "name": "Leite Integral Tirol 1L",
+                    "attributes": [{"id": "BRAND", "value_name": "Tirol"}],
                     "pictures": [{"secure_url": "http://ml.test/catalog.jpg"}]}]})
             if 'api.mercadolibre.com/sites' in url:
                 return self._json_mock({"results": []})
@@ -365,6 +366,7 @@ class EnrichmentV2Tests(TestCase):
         self.assertEqual(catalog_calls[0].kwargs['headers']['Authorization'],
                          'Bearer test-token')
         self.assertEqual(p.display_name, "Leite Integral Tirol 1L")
+        self.assertEqual(p.brand, "Tirol")
         self.assertEqual(p.image_url, "http://ml.test/catalog.jpg")
         self.assertEqual(p.metadata['source_image_url'], 'meli_catalog')
 

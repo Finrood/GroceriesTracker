@@ -472,6 +472,15 @@ class ProductEnrichmentService:
             return False
         changed = ProductEnrichmentService._set_display_name(
             product, name, source)
+        for attr in entry.get('attributes', []):
+            if isinstance(attr, dict) and attr.get('id') == 'BRAND':
+                brand = (attr.get('value_name') or '').strip()
+                if brand and not product.brand:
+                    product.brand = brand
+                    ProductEnrichmentService._log_history(
+                        product, 'brand', brand, source)
+                    changed = True
+                break
         pictures = entry.get('pictures', [])
         if pictures:
             pic = pictures[0].get('secure_url') or pictures[0].get('url')
