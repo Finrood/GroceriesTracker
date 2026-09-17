@@ -1,11 +1,8 @@
 # Django
-# Runtime data is environment-specific: never commit the live database,
-# media or collected static files. Historic sample data is preserved on the
-# git tag "sample-data" (git checkout sample-data -- db.sqlite3 media).
-db.sqlite3
-*.sqlite3
+# db.sqlite3 and media/ are tracked to allow data portability:
+# clone anywhere and data is directly available.
+# (SQLite WAL sidecars and caches stay ignored.)
 db.sqlite3-*
-media/
 staticfiles/
 django_cache/
 error.log
