@@ -1,3 +1,8 @@
+# Build context exclusions (image hygiene only).
+# db.sqlite3 + media/products/* ARE tracked in git for clone-and-run
+# portability, but stay out of the image: at runtime compose bind-mounts the
+# host checkout (.:/app), so containers use the repo copies, not image layers.
+# .env is excluded here AND ignored by git (secret, per-machine).
 .venv
 __pycache__
 *.pyc

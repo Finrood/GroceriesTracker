@@ -27,5 +27,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \
 COPY --from=builder /install /usr/local
 COPY . /app/
 
-# The CMD will be overridden by docker-compose for different services
+# The CMD will be overridden by compose for different services (see docker-compose.yml)
 CMD ["gunicorn", "GroceriesTracker.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]

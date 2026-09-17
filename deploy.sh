@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Update the production deployment from git in one step.
 # Usage: ./deploy.sh  (run inside the deployed clone, e.g. /opt/appdata/groceries)
+# Requires a clean tree: db.sqlite3 + media/ are tracked in git, so commit/push
+# local data changes first — 'git pull --ff-only' below aborts on divergence
+# or uncommitted DB writes instead of clobbering them.
 set -euo pipefail
 cd "$(dirname "$0")"
 
