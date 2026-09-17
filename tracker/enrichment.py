@@ -482,6 +482,8 @@ class ProductEnrichmentService:
     @staticmethod
     def _apply_meli_item(product, item, source, reference, threshold):
         """Apply one ML search/catalog item after title verification."""
+        if not isinstance(item, dict):
+            return False
         title = item.get('title', '')
         if not ProductEnrichmentService._titles_match(
                 title, reference, threshold):
@@ -518,7 +520,7 @@ class ProductEnrichmentService:
                     "Mercado Livre; catalog API token or proxy required")
             return False
         results = payload.get('results', [])
-        if not results:
+        if not isinstance(results, list) or not results:
             logger.info("meli-search: no results for %r", query[:60])
             return False
         # Prefer verified titles, breaking ties by units sold.
