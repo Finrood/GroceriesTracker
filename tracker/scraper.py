@@ -5,7 +5,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import re
 import logging
-from urllib.parse import urlparse
+import time
+from urllib.parse import urlparse, urljoin
 
 from .gtin import split_scraped_code
 
@@ -14,6 +15,9 @@ logger = logging.getLogger(__name__)
 BRAZIL_TZ = ZoneInfo('America/Sao_Paulo')
 
 class NFCeScraper:
+    MAX_HTML_BYTES = 5 * 1024 * 1024
+    MAX_REDIRECTS = 5
+    MAX_FETCH_SECONDS = 45
     HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
@@ -60,8 +64,12 @@ class NFCeScraper:
                 idx = host.find(suffix)
                 if idx > 0:
                     uf_part = host[idx + len(suffix):]
-                    uf = uf_part.split('.')[0].upper()
-                    if uf in cls.BRAZIL_UFS and uf_part.endswith('.gov.br'):
+                    # The allowlisted fiscal domain must end exactly at
+                    # <UF>.gov.br. A suffix-only check also accepted hosts
+                    # such as `fake.fazenda.sp.gov.br.attacker.gov.br`.
+                    uf, separator, government_suffix = uf_part.partition('.')
+                    if (separator and uf.upper() in cls.BRAZIL_UFS and
+                            government_suffix.lower() == 'gov.br'):
                         return True
         return False
 
@@ -95,16 +103,70 @@ class NFCeScraper:
         naive = datetime.strptime(match.group(1), '%d/%m/%Y %H:%M:%S')
         return naive.replace(tzinfo=BRAZIL_TZ)
 
-    def scrape_url(self, url):
-        # SSRF Check (fail-closed: only Brazilian fiscal portals)
+    @classmethod
+    def _validate_url(cls, url):
+        if not isinstance(url, str) or len(url) > 1000:
+            raise ValueError('Receipt URL is invalid or too long.')
         parsed = urlparse(url)
-        if parsed.scheme not in ('http', 'https') or not self._is_allowed_host(parsed.hostname):
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError('Receipt URL has an invalid port.') from exc
+        if (parsed.scheme not in ('http', 'https') or parsed.username or
+                parsed.password or port not in (None, 80, 443) or
+                not cls._is_allowed_host(parsed.hostname)):
             raise ValueError(f"Security: Domain {parsed.hostname} is not allowed for scraping.")
+        return parsed
 
-        response = requests.get(url, headers=self.HEADERS, timeout=15)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
+    def _get_html(self, url):
+        """Fetch bounded HTML and validate every redirect target."""
+        deadline = time.monotonic() + self.MAX_FETCH_SECONDS
+        for redirect_count in range(self.MAX_REDIRECTS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError('Receipt page took too long to load.')
+            self._validate_url(url)
+            response = requests.get(
+                url,
+                headers=self.HEADERS,
+                timeout=(min(5, remaining), min(10, remaining)),
+                allow_redirects=False,
+                stream=True,
+            )
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get('Location')
+                response.close()
+                if not location or redirect_count >= self.MAX_REDIRECTS:
+                    raise ValueError('Receipt page redirected too many times.')
+                url = urljoin(url, location)
+                self._validate_url(url)
+                continue
+
+            try:
+                response.raise_for_status()
+                content_type = response.headers.get('Content-Type', '').lower()
+                if content_type and not any(kind in content_type for kind in ('text/html', 'application/xhtml+xml')):
+                    raise ValueError('Receipt page did not return HTML.')
+                content_length = response.headers.get('Content-Length')
+                if content_length and content_length.isdigit() and int(content_length) > self.MAX_HTML_BYTES:
+                    raise ValueError('Receipt page is too large to process.')
+                body = bytearray()
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if time.monotonic() >= deadline:
+                        raise ValueError('Receipt page took too long to load.')
+                    if not chunk:
+                        continue
+                    body.extend(chunk)
+                    if len(body) > self.MAX_HTML_BYTES:
+                        raise ValueError('Receipt page is too large to process.')
+                return bytes(body)
+            finally:
+                response.close()
+        raise ValueError('Receipt page redirected too many times.')
+
+    def scrape_url(self, url):
+        html = self._get_html(url)
+        soup = BeautifulSoup(html, 'html.parser')
         full_text = soup.get_text(separator='\n')
         
         data = {
@@ -138,6 +200,10 @@ class NFCeScraper:
             raise ValueError("Could not parse the receipt issue date (Emissão) from the page.")
         if data['receipt']['total_amount'] <= 0:
             raise ValueError("Could not parse the receipt total (Valor total) from the page.")
+        if not re.fullmatch(r'\d{44}', data['receipt']['access_key'] or ''):
+            raise ValueError('Could not parse a valid 44-digit NFC-e access key from the page.')
+        if not 1 <= len(data['items']) <= 500:
+            raise ValueError('Could not parse a valid item list from the receipt page.')
         return data
 
     def _extract_store_name(self, soup, text):

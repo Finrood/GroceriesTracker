@@ -129,8 +129,8 @@
 {{ category_labels|json_script:"category-labels" }}
 {{ category_data|json_script:"category-data" }}
 
-<script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
-<script>
+<script nonce="{{ csp_nonce }}" src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+<script nonce="{{ csp_nonce }}">
     function getJson(id) { return JSON.parse(JSON.parse(document.getElementById(id).textContent)); }
 
     const labels = getJson("spending-labels");
@@ -140,7 +140,12 @@
     // 1. Spending Chart
     const spendingChart = echarts.init(document.getElementById('spendingChart'));
     spendingChart.setOption({
-        tooltip: { trigger: 'axis' },
+        tooltip: {
+            trigger: 'axis',
+            formatter: params => params.map(item =>
+                `${escapeHtml(item.axisValueLabel || item.name)}<br>${escapeHtml(item.seriesName)}: R$ ${Number(item.value).toFixed(2)}`
+            ).join('<br>')
+        },
         xAxis: { type: 'category', data: labels },
         yAxis: { type: 'value' },
         series: [
@@ -153,7 +158,12 @@
     // 2. Weekday Chart
     const weekdayChart = echarts.init(document.getElementById('weekdayChart'));
     weekdayChart.setOption({
-        tooltip: { trigger: 'axis' },
+        tooltip: {
+            trigger: 'axis',
+            formatter: params => params.map(item =>
+                `${escapeHtml(item.axisValueLabel || item.name)}<br>R$ ${Number(item.value).toFixed(2)}`
+            ).join('<br>')
+        },
         xAxis: { type: 'category', data: getJson("weekday-labels") },
         yAxis: { type: 'value' },
         series: [{ type: 'bar', data: getJson("weekday-data"), itemStyle: { color: '#6366f1', borderRadius: 4 } }]
@@ -163,7 +173,12 @@
     // 3. Brand Chart
     const brandChart = echarts.init(document.getElementById('brandChart'));
     brandChart.setOption({
-        tooltip: { trigger: 'axis' },
+        tooltip: {
+            trigger: 'axis',
+            formatter: params => params.map(item =>
+                `${escapeHtml(item.axisValueLabel || item.name)}<br>R$ ${Number(item.value).toFixed(2)}`
+            ).join('<br>')
+        },
         xAxis: { type: 'value' },
         yAxis: { type: 'category', data: getJson("brand-labels") },
         series: [{ type: 'bar', data: getJson("brand-data"), itemStyle: { color: '#8b5cf6', borderRadius: 4 } }]
@@ -173,7 +188,10 @@
     // 4. Category Chart
     const categoryChart = echarts.init(document.getElementById('categoryChart'));
     categoryChart.setOption({
-        tooltip: { trigger: 'item' },
+        tooltip: {
+            trigger: 'item',
+            formatter: item => `${escapeHtml(item.name)}: R$ ${Number(item.value).toFixed(2)} (${Number(item.percent).toFixed(1)}%)`
+        },
         series: [{
             type: 'pie',
             radius: ['40%', '70%'],

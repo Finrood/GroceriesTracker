@@ -141,7 +141,8 @@ class OptimizationRegressionTests(TestCase):
         request = self.factory.get('/receipt/')
         request.user = self.user
         with patch('tracker.views.render', wraps=render) as mock_render:
-            with self.assertNumQueries(5):
+            # 4 queries for non-staff: receipt (owner check), receipt+store, items, price_history bulk benchmark (all_categories query skipped for non-staff)
+            with self.assertNumQueries(4):
                 response = receipt_detail(request, self.receipt.id)
         self.assertEqual(response.status_code, 200)
         items = list(mock_render.call_args.args[2]['items'])

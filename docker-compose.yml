@@ -5,11 +5,13 @@ services:
     build: .
     container_name: groceries-web
     restart: unless-stopped
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
     # Graceful shutdown: gunicorn gets SIGTERM and finishes in-flight requests
     # before exit; long grace period lets SQLite checkpoint/rollback cleanly.
     stop_grace_period: 30s
     command: >
       sh -c "python manage.py migrate --noinput &&
+             python manage.py configure_schedules &&
              python manage.py collectstatic --noinput &&
              exec gunicorn GroceriesTracker.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
     env_file:
@@ -21,7 +23,9 @@ services:
       # (verified live 2026-09-15: worker couldn't see web's queued tasks).
       - .:/app
     ports:
-      - "8000:8000"
+      # The production Tunnel currently targets this host interface. Set
+      # WEB_BIND_ADDRESS=127.0.0.1 for a same-host loopback origin.
+      - "${WEB_BIND_ADDRESS:-192.168.1.50}:8000:8000"
     environment:
       - TZ=America/Sao_Paulo
     deploy:
@@ -44,6 +48,7 @@ services:
     build: .
     container_name: groceries-worker
     restart: unless-stopped
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
     command: python manage.py qcluster
     env_file:
       - .env
@@ -61,6 +66,12 @@ services:
       web:
         condition: service_healthy
         restart: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0 if b'qcluster' in open('/proc/1/cmdline', 'rb').read() else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     logging:
       driver: json-file
       options:

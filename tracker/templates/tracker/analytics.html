@@ -60,15 +60,15 @@
 
         <!-- Inventory Lists -->
         <div class="flex gap-2 flex-wrap mb-4">
-            <button onclick="toggleParetoList('listA')" class="btn btn-secondary flex-1 justify-between btn-pareto-a no-loading">
+            <button type="button" data-toggle-pareto="listA" class="btn btn-secondary flex-1 justify-between btn-pareto-a no-loading">
                 <span>📦 Class A</span>
                 <span class="badge badge-pareto-a" id="countA">0</span>
             </button>
-            <button onclick="toggleParetoList('listB')" class="btn btn-secondary flex-1 justify-between btn-pareto-b no-loading">
+            <button type="button" data-toggle-pareto="listB" class="btn btn-secondary flex-1 justify-between btn-pareto-b no-loading">
                 <span>📦 Class B</span>
                 <span class="badge badge-pareto-b" id="countB">0</span>
             </button>
-            <button onclick="toggleParetoList('listC')" class="btn btn-secondary flex-1 justify-between btn-pareto-c no-loading">
+            <button type="button" data-toggle-pareto="listC" class="btn btn-secondary flex-1 justify-between btn-pareto-c no-loading">
                 <span>📦 Class C</span>
                 <span class="badge badge-pareto-c" id="countC">0</span>
             </button>
@@ -167,7 +167,7 @@
     <div id="healthExplorer" class="card mt-8" style="display: none; border-top: 5px solid var(--primary); background: #fdfdfd;">
         <div class="flex justify-between items-center mb-6">
             <h3 id="explorerTitle" class="card-title mb-0">🕵️ Category Explorer</h3>
-            <button onclick="document.getElementById('healthExplorer').style.display='none'" class="btn btn-secondary btn-sm">Close</button>
+            <button type="button" data-action="close-health-explorer" class="btn btn-secondary btn-sm">Close</button>
         </div>
         <div id="explorerList" class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));">
             <!-- Items populated by JS -->
@@ -175,8 +175,8 @@
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
-<script>
+<script nonce="{{ csp_nonce }}" src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+<script nonce="{{ csp_nonce }}">
     // (Existing JS logic remains the same, but ensure it works with new ID classes if needed)
     // --- Heatmap Initialization ---
     const heatmapChart = echarts.init(document.getElementById('heatmapChart'));
@@ -202,7 +202,7 @@
                 axisPointer: { type: 'shadow' },
                 formatter: function(params) {
                     const item = data[params[0].dataIndex];
-                    return `<strong>${item.name}</strong><br>Price Index: ${item.value}%<br><small>GPS: ${item.lat}, ${item.lon}</small>`;
+                    return `<strong>${escapeHtml(item.name)}</strong><br>Price Index: ${Number(item.value).toFixed(2)}%<br><small>GPS: ${Number(item.lat).toFixed(5)}, ${Number(item.lon).toFixed(5)}</small>`;
                 }
             },
             grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
@@ -250,7 +250,10 @@
             });
 
             radarChart.setOption({
-                tooltip: { trigger: 'item' },
+                tooltip: {
+                    trigger: 'item',
+                    formatter: params => `<strong>${escapeHtml(params.seriesName)}</strong><br>${escapeHtml(params.name)}: ${Number(params.value).toFixed(2)}`
+                },
                 legend: { data: res.stores, bottom: 0, icon: 'circle' },
                 radar: {
                     indicator: res.indicators,
@@ -314,7 +317,13 @@
             const yData = res.a_items.slice(0, 10).map(i => i.spend);
 
             paretoChart.setOption({
-                tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { type: 'shadow' },
+                    formatter: params => params.map(item =>
+                        `${escapeHtml(item.axisValueLabel || item.name)}<br>Spend: R$ ${Number(item.value).toFixed(2)}`
+                    ).join('<br>')
+                },
                 grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
                 xAxis: { 
                     type: 'category', 
@@ -356,7 +365,7 @@
                 if (items.length === 0) { div.innerHTML = '<em class="p-4 block">No items in this class</em>'; return; }
                 let html = '<div class="table-responsive"><table class="table" style="font-size: 0.75rem;"><thead><tr><th>Product</th><th style="text-align:right;">Spend</th></tr></thead><tbody>';
                 items.forEach(i => {
-                    html += `<tr><td>${i.name}</td><td style="text-align:right;"><strong>R$ ${i.spend.toFixed(2)}</strong></td></tr>`;
+                    html += `<tr><td>${escapeHtml(i.name)}</td><td style="text-align:right;"><strong>R$ ${Number(i.spend).toFixed(2)}</strong></td></tr>`;
                 });
                 html += '</tbody></table></div>';
                 div.innerHTML = html;
@@ -375,6 +384,14 @@
         if (isOpening) target.style.display = 'block';
     }
 
+    document.addEventListener('click', event => {
+        const toggle = event.target.closest('[data-toggle-pareto]');
+        if (toggle) toggleParetoList(toggle.dataset.togglePareto);
+        if (event.target.closest('[data-action="close-health-explorer"]')) {
+            document.getElementById('healthExplorer').style.display = 'none';
+        }
+    });
+
     // --- Shrinkflation Logic ---
     fetch('{% url "api_chart_data" %}?type=shrinkflation')
         .then(response => response.json())
@@ -382,22 +399,24 @@
             const container = document.getElementById('shrinkReport');
             const suggestions = document.getElementById('suggestionList');
             
+            {% if request.user.is_staff %}
             if (res.suggestions && res.suggestions.length > 0) {
                 document.getElementById('suggestionsArea').style.display = 'block';
                 let sHtml = '';
                 res.suggestions.forEach(s => {
                     sHtml += `<div class="flex justify-between items-center py-2 border-b border-blue-100" style="font-size: 0.75rem;">
-                        <span>Link <strong>${s.name1}</strong> to <strong>${s.name2}</strong>?</span>
+                        <span>Link <strong>${escapeHtml(s.name1)}</strong> to <strong>${escapeHtml(s.name2)}</strong>?</span>
                         <form action="{% url 'link_product_variant' %}" method="POST" style="display:inline;">
                             {% csrf_token %}
-                            <input type="hidden" name="child_id" value="${s.id1}">
-                            <input type="hidden" name="parent_id" value="${s.id2}">
+                            <input type="hidden" name="child_id" value="${Number(s.id1)}">
+                            <input type="hidden" name="parent_id" value="${Number(s.id2)}">
                             <button type="submit" class="btn btn-secondary btn-sm" style="padding: 2px 6px; font-size: 0.65rem;">Link</button>
                         </form>
                     </div>`;
                 });
                 suggestions.innerHTML = sHtml;
             }
+            {% endif %}
 
             if (!res.report || res.report.length === 0) {
                 container.innerHTML = '<div class="text-center py-8 text-muted">No shrinkflation detected.</div>';
@@ -410,7 +429,7 @@
                 const impactText = item.cost_impact > 0 ? `+${item.cost_impact}% Hike` : `${item.cost_impact}% Saving`;
                 
                 html += `<tr>
-                    <td><strong class="text-main">${item.master}</strong><br><small class="text-muted">${item.old_weight}g → ${item.new_weight}g</small></td>
+                    <td><strong class="text-main">${escapeHtml(item.master)}</strong><br><small class="text-muted">${Number(item.old_weight)}g → ${Number(item.new_weight)}g</small></td>
                     <td style="text-align:right;">
                         <span class="badge badge-danger mb-1">-${item.shrink_pct}% Size</span><br>
                         <small style="color:${impactColor}; font-weight:700;">${impactText}</small>
@@ -437,7 +456,7 @@
                 const list = document.getElementById('explorerList');
                 document.getElementById('explorerTitle').innerText = '🕵️ Products in ' + title;
                 ex.style.display = 'block';
-                list.innerHTML = items.length ? items.map(i => `<div class="p-3 bg-white border border-gray-200 rounded-lg text-sm font-bold shadow-sm">${i}</div>`).join('') : '<p>No products found.</p>';
+                list.innerHTML = items.length ? items.map(i => `<div class="p-3 bg-white border border-gray-200 rounded-lg text-sm font-bold shadow-sm">${escapeHtml(i)}</div>`).join('') : '<p>No products found.</p>';
                 ex.scrollIntoView({ behavior: 'smooth' });
             };
 
@@ -509,7 +528,7 @@
 
                 html += `<div class="flex justify-between items-center bg-white p-4 rounded-lg border border-gray-100 shadow-sm">
                     <div>
-                        <strong class="text-sm">${item.store}</strong>
+                        <strong class="text-sm">${escapeHtml(item.store)}</strong>
                         <div class="text-xs text-muted">10-item basket</div>
                     </div>
                     <div class="text-right">
@@ -526,7 +545,7 @@
         const sign = m.pct > 0 ? '+' : '';
         const thin = (m.n_recent + m.n_base) < 4 ? ' <span class="text-xs text-muted" title="Few data points">· thin</span>' : '';
         return `<div class="flex justify-between items-center bg-white p-3 rounded-lg border border-gray-100 shadow-sm">
-            <div><strong class="text-sm">${m.name}</strong>
+            <div><strong class="text-sm">${escapeHtml(m.name)}</strong>
             <div class="text-xs text-muted">R$ ${m.recent} vs R$ ${m.baseline}${thin}</div></div>
             <div style="color: ${color}; font-weight: 800;">${sign}${m.pct}%</div>
         </div>`;
@@ -555,8 +574,8 @@
             }
             c.innerHTML = res.map(s =>
                 `<div class="flex justify-between items-center bg-white p-3 rounded-lg border border-gray-100 shadow-sm">
-                    <div><strong class="text-sm">${s.name}</strong>
-                    <div class="text-xs text-muted">Low R$ ${s.low} · avg R$ ${s.avg} · ${s.last_date}</div></div>
+                    <div><strong class="text-sm">${escapeHtml(s.name)}</strong>
+                    <div class="text-xs text-muted">Low R$ ${Number(s.low).toFixed(2)} · avg R$ ${Number(s.avg).toFixed(2)} · ${escapeHtml(s.last_date)}</div></div>
                     <div style="color: #10b981; font-weight: 800;">R$ ${s.latest}</div>
                 </div>`).join('');
         });
@@ -575,7 +594,7 @@
                 const pct = Math.round((res.totals[i] / max) * 100);
                 const cov = res.coverage ? ` <span class="text-xs text-muted">(${res.coverage[i]}/${res.basket_size})</span>` : '';
                 html += `<div class="flex items-center gap-3">
-                    <div class="text-xs text-muted" style="width: 70px;">${label}</div>
+                    <div class="text-xs text-muted" style="width: 70px;">${escapeHtml(label)}</div>
                     <div style="flex: 1; background: #f1f5f9; border-radius: 6px; height: 18px;">
                         <div style="width: ${pct}%; background: var(--primary); border-radius: 6px; height: 18px;"></div>
                     </div>

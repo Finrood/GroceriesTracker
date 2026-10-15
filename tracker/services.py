@@ -9,13 +9,27 @@ from math import radians, cos, sin, asin, sqrt
 import re
 import requests
 from django_q.tasks import async_task
-from rapidfuzz import fuzz, process
-from .models import Store, Product, Category, Receipt, ReceiptItem, PriceHistory, ProductMapping
+from rapidfuzz import fuzz
+from .models import (
+    Store, Product, Category, Receipt, ReceiptItem, PriceHistory, ProductMapping,
+    normalize_text, normalized_for,
+)
 from .enrichment import ProductEnrichmentService
 from .gtin import is_valid_gtin, normalize_code
 from . import canonical as canonical_svc
 
 DASHBOARD_CACHE_VERSION_KEY = 'dashboard_cache_version'
+
+
+def _own_price_history_scope(user, related_prefix=''):
+    """Include a user's history and legacy rows linked to their receipts."""
+    return (
+        Q(**{f'{related_prefix}user': user}) |
+        Q(**{
+            f'{related_prefix}user__isnull': True,
+            f'{related_prefix}receipt__user': user,
+        })
+    )
 
 
 def dashboard_cache_version():
@@ -40,6 +54,22 @@ def bump_dashboard_cache():
         return 1
 
 class ReceiptService:
+    @staticmethod
+    def _receipt_decimal(value, field, max_digits=12, decimal_places=2):
+        """Validate decimals against the precision of the destination field."""
+        try:
+            number = Decimal(str(value))
+        except Exception as exc:
+            raise ValueError(f'Receipt contains an invalid {field}.') from exc
+        if not number.is_finite():
+            raise ValueError(f'Receipt contains an invalid {field}.')
+        if number and number.adjusted() >= max_digits - decimal_places:
+            raise ValueError(f'Receipt {field} is too large.')
+        fractional_places = max(0, -number.as_tuple().exponent)
+        if fractional_places > decimal_places:
+            raise ValueError(f'Receipt {field} has too many decimal places.')
+        return number
+
     @staticmethod
     def generate_readable_name(raw_name):
         """
@@ -101,15 +131,103 @@ class ReceiptService:
         Processes and saves a receipt and its items.
         Uses GTIN and ProductMapping (internal store codes) for 100% accuracy.
         """
-        store_cnpj = normalize_code(data['store'].get('cnpj', ''))
+        if not getattr(user, 'is_authenticated', False):
+            raise ValueError('A signed-in user is required to save a receipt.')
+        if not isinstance(url, str) or len(url) > 1000:
+            raise ValueError('Receipt URL is invalid or too long.')
+
+        source_receipt = dict(data.get('receipt') or {})
+        access_key = str(source_receipt.get('access_key') or '').strip()
+        if not re.fullmatch(r'\d{44}', access_key):
+            raise ValueError('Receipt has no valid 44-digit NFC-e access key.')
+        issue_date = source_receipt.get('issue_date')
+        if not isinstance(issue_date, datetime) or timezone.is_naive(issue_date):
+            raise ValueError('Receipt issue date must be timezone-aware.')
+
+        receipt_data = {
+            'access_key': access_key,
+            'issue_date': issue_date,
+            'series': str(source_receipt.get('series') or '').strip()[:10],
+            'number': str(source_receipt.get('number') or '').strip()[:20],
+            'payment_method': str(source_receipt.get('payment_method') or '').strip()[:100],
+            'consumer_cpf': normalize_code(source_receipt.get('consumer_cpf')) or None,
+        }
+        if receipt_data['consumer_cpf'] and len(receipt_data['consumer_cpf']) != 11:
+            receipt_data['consumer_cpf'] = None
+        for field in ('total_amount', 'discount', 'tax_federal', 'tax_state', 'tax_municipal'):
+            receipt_data[field] = ReceiptService._receipt_decimal(
+                source_receipt.get(field, 0 if field != 'total_amount' else None), field)
+        if receipt_data['total_amount'] <= 0:
+            raise ValueError('Receipt total must be a positive amount.')
+        if any(receipt_data[field] < 0 for field in (
+                'discount', 'tax_federal', 'tax_state', 'tax_municipal')):
+            raise ValueError('Receipt discounts and taxes cannot be negative.')
+        if receipt_data['discount'] > receipt_data['total_amount']:
+            raise ValueError('Receipt discount cannot exceed its total.')
+
+        items = data.get('items')
+        if not isinstance(items, list) or not 1 <= len(items) <= 500:
+            raise ValueError('Receipt must contain between 1 and 500 items.')
+        normalized_items = []
+        for item in items:
+            if not isinstance(item, dict) or not str(item.get('name') or '').strip():
+                raise ValueError('Receipt contains an item without a product name.')
+            name = str(item['name']).strip()
+            if len(name) > 255:
+                raise ValueError('Receipt contains a product name that is too long.')
+            quantity = ReceiptService._receipt_decimal(
+                item.get('quantity'), 'item quantity', max_digits=12, decimal_places=3)
+            unit_price = ReceiptService._receipt_decimal(item.get('unit_price'), 'item unit price')
+            line_total = ReceiptService._receipt_decimal(item.get('total_price'), 'item total')
+            raw_normalized = item.get('normalized_price')
+            normalized_price = (
+                None if raw_normalized is None else
+                ReceiptService._receipt_decimal(raw_normalized, 'normalized item price')
+            )
+            if (quantity <= 0 or unit_price < 0 or line_total < 0 or
+                    (normalized_price is not None and normalized_price < 0)):
+                raise ValueError('Receipt contains an item with invalid amounts.')
+            unit_type = str(item.get('unit_type') or 'UN').strip().upper()
+            if not re.fullmatch(r'[A-Z0-9]{1,10}', unit_type):
+                raise ValueError('Receipt contains an invalid unit type.')
+
+            raw_gtin = normalize_code(item.get('code_gtin'))
+            internal_code = normalize_code(item.get('internal_code')) or raw_gtin
+            if len(internal_code) > 50:
+                raise ValueError('Receipt contains an internal product code that is too long.')
+            category_name = str(item.get('category') or 'Geral').strip()[:100] or 'Geral'
+            ncm = re.sub(r'\D', '', str(item.get('ncm') or ''))
+            normalized_items.append({
+                **item,
+                'name': name,
+                'quantity': quantity,
+                'unit_price': unit_price,
+                'total_price': line_total,
+                'normalized_price': normalized_price,
+                'unit_type': unit_type,
+                'category': normalize_text(category_name),
+                'brand': str(item.get('brand') or '').strip()[:100],
+                'ncm': ncm if len(ncm) == 8 else '',
+                'code_gtin': raw_gtin,
+                'internal_code': internal_code,
+            })
+
+        store_data = dict(data.get('store') or {})
+        store_name = str(store_data.get('name') or 'Unknown Store').strip()[:255] or 'Unknown Store'
+        store_city = str(store_data.get('city') or 'Unknown').strip()[:100] or 'Unknown'
+        store_neighborhood = str(store_data.get('neighborhood') or '').strip()[:100]
+        store_street = str(store_data.get('street') or '').strip()[:255]
+        store_cnpj = normalize_code(store_data.get('cnpj', ''))
+        if len(store_cnpj) > 14:
+            raise ValueError('Receipt contains an invalid store CNPJ.')
         if store_cnpj:
             store, _ = Store.objects.get_or_create(
                 cnpj=store_cnpj,
                 defaults={
-                    'name': data['store']['name'],
-                    'address_city': data['store']['city'],
-                    'address_neighborhood': data['store']['neighborhood'],
-                    'address_street': data['store']['street']
+                    'name': store_name,
+                    'address_city': store_city,
+                    'address_neighborhood': store_neighborhood,
+                    'address_street': store_street
                 }
             )
         else:
@@ -117,8 +235,8 @@ class ReceiptService:
             # cnpj allows a single '' row): reuse one fallback store instead
             # of crashing with IntegrityError on the second import.
             store, _ = Store.objects.get_or_create(
-                name='Unknown Store',
-                defaults={'cnpj': '', 'address_city': 'Unknown',
+                cnpj='',
+                defaults={'name': 'Unknown Store', 'address_city': 'Unknown',
                           'address_neighborhood': '', 'address_street': ''}
             )
         # Keep every store linked to its chain (new CNPJs arrive over time).
@@ -130,27 +248,25 @@ class ReceiptService:
         # receipt, and the DB constraint below is the last-resort guard.
         # Returning the existing row turns accidental re-submissions into
         # no-ops instead of IntegrityError 500s.
-        access_key = data['receipt'].get('access_key', '')
-        if access_key:
-            existing = Receipt.objects.filter(user=user, access_key=access_key).first()
-            if existing:
-                return existing
+        existing = Receipt.objects.filter(user=user, access_key=access_key).first()
+        if existing:
+            return existing
 
         receipt = Receipt.objects.create(
             store=store,
             user=user,
             url=url,
-            **data['receipt']
+            **receipt_data
         )
 
-        for i in data['items']:
+        for i in normalized_items:
             cat, _ = Category.objects.get_or_create(name=i.get('category', 'Geral'))
-            raw_gtin = normalize_code(i.get('code_gtin'))
+            raw_gtin = i['code_gtin']
             # Only real global GTINs may hit the cross-store lookup. Short
             # PLUs and in-store weigh codes are store-scoped (see gtin.py).
             gtin = raw_gtin if is_valid_gtin(raw_gtin) else ''
             name = i['name'].strip()
-            internal_code = normalize_code(i.get('internal_code')) or raw_gtin
+            internal_code = i['internal_code']
 
             prod = None
 
@@ -160,7 +276,13 @@ class ReceiptService:
             
             # 2. Try Store Mapping (Internal Code Anchor)
             if not prod and internal_code:
-                mapping = ProductMapping.objects.filter(store=store, internal_code=internal_code).first()
+                mapping = ProductMapping.objects.filter(
+                    store=store, internal_code=internal_code, user=user
+                ).first()
+                if mapping is None:
+                    mapping = ProductMapping.objects.filter(
+                        store=store, internal_code=internal_code, user__isnull=True
+                    ).first()
                 if mapping:
                     prod = mapping.product
             
@@ -234,6 +356,16 @@ class ReceiptService:
                 # If mapping existed but was unconfirmed, and we found a new exact match, we don't change it here
                 # but if we just created it from a fuzzy match, it stays is_confirmed=False
 
+            normalized_price = i['normalized_price']
+            if normalized_price is None:
+                try:
+                    normalized_price = normalized_for(
+                        i['unit_price'], prod.weight_grams
+                    ).quantize(Decimal('0.01'))
+                except Exception as exc:
+                    raise ValueError('Receipt contains an invalid normalized price.') from exc
+                normalized_price = ReceiptService._receipt_decimal(
+                    normalized_price, 'normalized item price')
             item = ReceiptItem.objects.create(
                 receipt=receipt,
                 product=prod,
@@ -241,7 +373,7 @@ class ReceiptService:
                 unit_type=i['unit_type'],
                 unit_price=i['unit_price'],
                 total_price=i['total_price'],
-                normalized_price=i.get('normalized_price')
+                normalized_price=normalized_price
             )
 
             # Populate Time-Series History (receipt FK lets deletes/refreshes
@@ -268,15 +400,18 @@ class AnalyticsService:
         end_date = timezone.now()
         start_date = end_date - timedelta(days=180)
         
-        # 1. Calculate Global Average per Product (Market Baseline)
-        # We still use Global averages for the baseline, but store deltas are personal
-        global_avgs = PriceHistory.objects.filter(date__gte=start_date).values('product_id').annotate(
+        # Keep each account's benchmark private; only prices linked to this
+        # user's receipts may contribute to the baseline or store scores.
+        own_history = _own_price_history_scope(user)
+        history = PriceHistory.objects.filter(
+            own_history, date__gte=start_date, normalized_price__isnull=False
+        )
+        personal_avgs = history.values('product_id').annotate(
             avg_price=Avg('normalized_price')
         )
-        avg_map = {item['product_id']: float(item['avg_price']) for item in global_avgs}
-        
-        # 2. Fetch prices per store for THIS user
-        raw_stats = PriceHistory.objects.filter(user=user, date__gte=start_date).select_related('store').values(
+        avg_map = {item['product_id']: float(item['avg_price']) for item in personal_avgs}
+
+        raw_stats = history.select_related('store').values(
             'store__name', 'store__id', 'store__latitude', 'store__longitude', 'product_id', 'normalized_price'
         )
         
@@ -320,12 +455,14 @@ class AnalyticsService:
         """
         Returns OHLC (Open, High, Low, Close) data for a product per month.
         """
-        raw_data = PriceHistory.objects.filter(user=user, product_id=product_id).order_by('date')
+        raw_data = PriceHistory.objects.filter(
+            _own_price_history_scope(user), product_id=product_id
+        ).order_by('date')
         if not raw_data.exists(): return []
 
         grouped = {}
         for row in raw_data:
-            m = row.date.strftime('%Y-%m')
+            m = timezone.localtime(row.date).strftime('%Y-%m')
             if m not in grouped: grouped[m] = {'prices': [], 'date': row.date}
             grouped[m]['prices'].append(float(row.unit_price))
         
@@ -349,8 +486,9 @@ class AnalyticsService:
         Includes dynamic max bounds for ECharts.
         """
         qs = PriceHistory.objects.filter(
-            user=user,
-            date__gte=timezone.now()-timedelta(days=120)
+            _own_price_history_scope(user),
+            date__gte=timezone.now()-timedelta(days=120),
+            normalized_price__isnull=False,
         )
         
         if store_ids:
@@ -358,7 +496,7 @@ class AnalyticsService:
             
         data = qs.values('store__name', 'product__category__name').annotate(
             avg_price=Avg('normalized_price')
-        ).order_by('store__name')
+        ).order_by('product__category__name', 'store__name')
         
         radar_data = {}
         stores = set()
@@ -379,7 +517,7 @@ class AnalyticsService:
             
         return {
             'indicators': indicators, 
-            'stores': list(stores), 
+            'stores': sorted(stores),
             'data': radar_data,
             'categories': list(category_maxes.keys())
         }
@@ -455,7 +593,9 @@ class AnalyticsService:
         Projects end-of-month spending using a Weighted Historical Anchor.
         Combines current month velocity with the average of the last 3 months.
         """
-        today = timezone.now()
+        # Calendar-based projections must use the app's local timezone. The
+        # receipts are stamped in São Paulo time, while timezone.now() is UTC.
+        today = timezone.localtime()
         first_day = today.replace(day=1, hour=0, minute=0, second=0)
         days_passed = today.day
         last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
@@ -478,7 +618,10 @@ class AnalyticsService:
         daily_burn_current = float(current_spend) / days_passed
 
         # 2. Historical Anchor (Avg of last 3 full months)
-        three_months_ago = (first_day - timedelta(days=1)).replace(day=1) - timedelta(days=60)
+        month_index = first_day.year * 12 + first_day.month - 1 - 3
+        history_year, history_month = divmod(month_index, 12)
+        three_months_ago = first_day.replace(
+            year=history_year, month=history_month + 1)
         hist_stats = Receipt.objects.filter(
             user=user,
             issue_date__lt=first_day,
@@ -567,34 +710,37 @@ class AnalyticsService:
         
         report = []
         for master in masters:
-            variants = master.variants.all().order_by('id') # Simplified timeline for now
+            # The catalog is shared, but expose only variants that this user
+            # purchased and calculate financial impact from their own prices.
+            variants = master.variants.filter(
+                receiptitems__receipt__user=user
+            ).annotate(
+                first_purchase=Min('receiptitems__receipt__issue_date')
+            ).distinct().order_by('first_purchase', 'id')
             if variants.count() < 2: continue
             
             # Compare first and last variant
             v_old = variants.first()
             v_new = variants.last()
             
-            # Logic: Try to extract weight from names (e.g. 395g vs 350g)
-            def extract_weight(name):
-                # Look for numbers (including decimals) followed by weight units
-                # Pattern: matches '395g', '1,15kg', '2 L', '500 ml'
-                matches = re.findall(r'(\d+[\.,]?\d*)\s*(G|KG|ML|L)', name.upper())
-                if matches:
-                    # Take the last match (usually where the size is in the name)
-                    val_str, unit = matches[-1]
-                    val = float(val_str.replace(',', '.'))
-                    return val if unit in ['G', 'ML'] else val * 1000
-                return 0
-
-            w_old = extract_weight(v_old.name)
-            w_new = extract_weight(v_new.name)
+            old_size = ProductMatchingService._size_signature(
+                v_old.display_name or v_old.name)
+            new_size = ProductMatchingService._size_signature(
+                v_new.display_name or v_new.name)
             
-            if w_new < w_old and w_new > 0:
+            if (old_size and new_size and old_size[0] == new_size[0] and
+                    new_size[1] < old_size[1] and old_size[1] > 0):
+                w_old, w_new = float(old_size[1]), float(new_size[1])
                 shrink_pct = ((w_old - w_new) / w_old) * 100
                 
                 # Financial Impact: Compare average normalized price (Price per 1kg/1L)
-                p_old = PriceHistory.objects.filter(product=v_old).aggregate(Avg('normalized_price'))['normalized_price__avg'] or 0
-                p_new = PriceHistory.objects.filter(product=v_new).aggregate(Avg('normalized_price'))['normalized_price__avg'] or 0
+                own_history = _own_price_history_scope(user)
+                p_old = PriceHistory.objects.filter(
+                    own_history, product=v_old
+                ).aggregate(Avg('normalized_price'))['normalized_price__avg'] or 0
+                p_new = PriceHistory.objects.filter(
+                    own_history, product=v_new
+                ).aggregate(Avg('normalized_price'))['normalized_price__avg'] or 0
                 
                 cost_impact = 0
                 if p_old > 0:
@@ -629,7 +775,9 @@ class AnalyticsService:
             canon_id = None
         if canon_id:
             scope = Q(product__canonical_id=canon_id)
-        rows = list(PriceHistory.objects.filter(user=user).filter(scope).values_list(
+        rows = list(PriceHistory.objects.filter(
+            _own_price_history_scope(user)
+        ).filter(scope).values_list(
             'normalized_price', 'unit_price'))
         return AnalyticsService._price_benchmark_from_rows(rows, current_price, normalized_price)
 
@@ -640,7 +788,7 @@ class AnalyticsService:
             return {}
         canonical_ids = {item.product.canonical_id for item in items if item.product.canonical_id}
         product_ids = {item.product_id for item in items if not item.product.canonical_id}
-        rows = PriceHistory.objects.filter(user=user).filter(
+        rows = PriceHistory.objects.filter(_own_price_history_scope(user)).filter(
             Q(product__canonical_id__in=canonical_ids) | Q(product_id__in=product_ids)
         ).values_list('product_id', 'product__canonical_id', 'normalized_price', 'unit_price')
         buckets = {}
@@ -737,16 +885,16 @@ class AnalyticsService:
                 seen_products.add(p.id)
 
             # 2. Nutritional Density (Weighted by Volume)
-            nutri = m.get('nutrition', {})
+            nutri = ProductEnrichmentService._clean_nutrition(m.get('nutrition'))
             if nutri:
                 # Weight in KG for this specific purchase
                 weight_kg = (float(p.weight_grams or 0) / 1000.0) * float(item.quantity)
                 # If weight not found, assume 1kg/unit for heuristic density
                 if weight_kg == 0: weight_kg = float(item.quantity) 
 
-                stats['nutrients']['sugar'] += float(nutri.get('sugars_100g', 0) or 0) * weight_kg
-                stats['nutrients']['salt'] += float(nutri.get('salt_100g', 0) or 0) * weight_kg
-                stats['nutrients']['fat'] += float(nutri.get('fat_100g', 0) or 0) * weight_kg
+                stats['nutrients']['sugar'] += nutri.get('sugars_100g', 0) * weight_kg
+                stats['nutrients']['salt'] += nutri.get('salt_100g', 0) * weight_kg
+                stats['nutrients']['fat'] += nutri.get('fat_100g', 0) * weight_kg
                 stats['nutrients']['total_volume_kg'] += weight_kg
         
         if stats['nutrients']['total_volume_kg'] > 0:
@@ -771,7 +919,8 @@ class AnalyticsService:
         if not top_items or not stores:
             return []
         observations = PriceHistory.objects.filter(
-            user=user, product_id__in=top_items, store_id__in=[store.pk for store in stores]
+            _own_price_history_scope(user),
+            product_id__in=top_items, store_id__in=[store.pk for store in stores]
         ).annotate(
             observation_rank=Window(
                 expression=RowNumber(),
@@ -818,7 +967,7 @@ class AnalyticsService:
         Returns {key: {'label': str, 'prices': [(date, normalized), ...]}}.
         Normalized-only: buckets without a single normalized value are dropped.
         """
-        qs = PriceHistory.objects.filter(user=user).select_related(
+        qs = PriceHistory.objects.filter(_own_price_history_scope(user)).select_related(
             'product', 'product__canonical')
         if since is not None:
             qs = qs.filter(date__gte=since)
@@ -846,7 +995,7 @@ class AnalyticsService:
         one point on each side; counts are returned so the UI can flag thin
         evidence.
         """
-        now = timezone.now()
+        now = timezone.localtime()
         buckets = AnalyticsService._bucket_rows(user, since=now - timedelta(
             days=recent_days + baseline_days))
         split = now - timedelta(days=recent_days)
@@ -893,7 +1042,8 @@ class AnalyticsService:
                     'low': round(low, 2),
                     'avg': round(avg, 2),
                     'vs_avg': round(((latest - avg) / avg) * 100, 1) if avg else 0,
-                    'last_date': b['prices'][-1][0].strftime('%Y-%m-%d'),
+                    'last_date': timezone.localtime(
+                        b['prices'][-1][0]).strftime('%Y-%m-%d'),
                 })
         signals.sort(key=lambda s: s['vs_avg'])
         return signals
@@ -908,7 +1058,7 @@ class AnalyticsService:
         buckets = AnalyticsService._bucket_rows(user)
         top = sorted(buckets.items(), key=lambda kv: -len(kv[1]['prices']))[:top_n]
         top_keys = {k for k, _ in top}
-        now = timezone.now()
+        now = timezone.localtime()
         starts = []
         cursor = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         for _ in range(months):
@@ -978,7 +1128,7 @@ class AnalyticsService:
         # Basket MoM from consecutive monthly totals (skip zero gaps).
         personal, labels = [], []
         month_keys = []
-        now = timezone.now()
+        now = timezone.localtime()
         cursor = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         starts = []
         for _ in range(months + 1):
@@ -1025,25 +1175,27 @@ class AnalyticsService:
 
 class SmartCartService:
     @staticmethod
-    def _match_row(item_name):
+    def _match_row(user, item_name):
         """Best Product row for a list line.
 
         Rank: whole-word hit first ('tomate' -> fresh tomato, not tomato
         extract), then most purchase history, then lowest id. The whole-word
         pass runs Python-side over capped candidates (SQLite has no REGEXP).
         """
+        own_history = _own_price_history_scope(user)
+        history_count_scope = _own_price_history_scope(user, 'price_history__')
         cands = list(Product.objects.filter(
             Q(name__icontains=item_name) | Q(display_name__icontains=item_name)
         ).annotate(
-            n_hist=Count('price_history'),
+            n_hist=Count('price_history', filter=history_count_scope),
             recent_price=Subquery(
-                PriceHistory.objects.filter(product=OuterRef('pk')).order_by('-date').values('unit_price')[:1]
+                PriceHistory.objects.filter(own_history, product=OuterRef('pk')).order_by('-date').values('unit_price')[:1]
             ),
             store_name=Subquery(
-                PriceHistory.objects.filter(product=OuterRef('pk')).order_by('-date').values('store__name')[:1]
+                PriceHistory.objects.filter(own_history, product=OuterRef('pk')).order_by('-date').values('store__name')[:1]
             ),
             store_id=Subquery(
-                PriceHistory.objects.filter(product=OuterRef('pk')).order_by('-date').values('store__id')[:1]
+                PriceHistory.objects.filter(own_history, product=OuterRef('pk')).order_by('-date').values('store__id')[:1]
             )
         ).filter(recent_price__isnull=False).order_by('-n_hist', 'id')[:20])
         if not cands:
@@ -1077,11 +1229,12 @@ class SmartCartService:
         return Q(product_id=product.id)
 
     @staticmethod
-    def _bucket_label(key, product):
+    def _bucket_label(key, product, user):
         """Shortest display name among priced member rows (live, enrichment-proof)."""
         if not key.startswith('canon:'):
             return product.display_name or product.name
-        names = list(PriceHistory.objects.filter(
+        own_history = _own_price_history_scope(user)
+        names = list(PriceHistory.objects.filter(own_history,
             product__canonical_id=product.canonical_id
         ).values_list('product__display_name', 'product__name').distinct())
         if not names:
@@ -1104,7 +1257,7 @@ class SmartCartService:
         bucket_map = {}
         unmatched = []
         for item_name in items_needed:
-            match = SmartCartService._match_row(item_name)
+            match = SmartCartService._match_row(user, item_name)
             if match is None:
                 if item_name not in unmatched:
                     unmatched.append(item_name)
@@ -1126,8 +1279,9 @@ class SmartCartService:
             prod = p_data['product']
             qty = p_data['quantity']
             scope = SmartCartService._bucket_scope(key, prod)
-            label = SmartCartService._bucket_label(key, prod)
-            prices = PriceHistory.objects.filter(
+            label = SmartCartService._bucket_label(key, prod, user)
+            own_history = _own_price_history_scope(user)
+            prices = PriceHistory.objects.filter(own_history,
                 scope,
                 date__gte=cutoff
             ).values('store__name').annotate(price=Avg('unit_price'),
@@ -1166,9 +1320,10 @@ class SmartCartService:
             prod = p_data['product']
             qty = p_data['quantity']
             scope = SmartCartService._bucket_scope(key, prod)
-            label = SmartCartService._bucket_label(key, prod)
+            label = SmartCartService._bucket_label(key, prod, user)
+            own_history = _own_price_history_scope(user)
             # Absolute cheapest store for this bucket (any member row).
-            best_price_record = PriceHistory.objects.filter(
+            best_price_record = PriceHistory.objects.filter(own_history,
                 scope,
                 date__gte=cutoff
             ).values('store__name', 'unit_price', 'date').order_by('unit_price').first()
@@ -1176,9 +1331,9 @@ class SmartCartService:
             if best_price_record:
                 # Calculate Confidence
                 record_date = best_price_record['date']
-                if hasattr(record_date, 'date'): record_date = record_date.date()
-
-                days_old = (timezone.now().date() - record_date).days
+                today = timezone.localtime().date()
+                record_day = timezone.localtime(record_date).date()
+                days_old = (today - record_day).days
                 if days_old <= 7:
                     confidence = {'label': 'High', 'class': 'badge-success', 'score': 100}
                 elif days_old <= 21:
@@ -1213,6 +1368,36 @@ class SmartCartService:
         }
 
 class ProductMatchingService:
+    SIZE_RE = re.compile(r'(\d+(?:[.,]\d+)?)\s*(KG|G|ML|L)\b', re.IGNORECASE)
+    MULTIPACK_RE = re.compile(
+        r'(\d+)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*(KG|G|ML|L)\b',
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _size_signature(cls, name):
+        """Return comparable mass/volume size, including common multipacks."""
+        text = str(name or '').upper()
+        multipack = cls.MULTIPACK_RE.search(text)
+        if multipack:
+            count, raw_size, unit = multipack.groups()
+            amount = Decimal(raw_size.replace(',', '.')) * int(count)
+        else:
+            matches = list(cls.SIZE_RE.finditer(text))
+            if not matches:
+                return None
+            raw_size, unit = matches[-1].groups()
+            amount = Decimal(raw_size.replace(',', '.'))
+
+        unit = unit.upper()
+        if unit == 'KG':
+            return ('mass', amount * 1000)
+        if unit == 'G':
+            return ('mass', amount)
+        if unit == 'L':
+            return ('volume', amount * 1000)
+        return ('volume', amount)
+
     @staticmethod
     def find_best_match(name, category_name=None, brand=None, threshold=88.0):
         """
@@ -1228,27 +1413,38 @@ class ProductMatchingService:
         if brand and brand != 'Generic':
             candidates = candidates.filter(brand__iexact=brand)
         
-        # 3. Only look at products that have some history (real purchases)
-        candidates = list(candidates.values('id', 'name', 'display_name'))
+        # 3. Only look at products tied to an actual purchase. Catalog-only
+        # rows and enrichment placeholders are poor candidates for imports.
+        candidates = list(candidates.filter(
+            Q(price_history__isnull=False) | Q(receiptitems__isnull=False)
+        ).values('id', 'name', 'display_name', 'weight_grams').distinct())
         if not candidates:
             return None
 
-        # 4. Fuzzy Match logic using rapidfuzz
-        # We compare against BOTH raw name and display name
-        search_space = []
-        for c in candidates:
-            # Normalize to uppercase for accurate comparison
-            search_space.append((c['id'], (c['display_name'] or c['name']).upper()))
-            
-        names_only = [s[1] for s in search_space]
-        # token_set_ratio handles "Leite Integral" vs "Integral Leite"
-        best = process.extractOne(name.upper(), names_only, scorer=fuzz.token_set_ratio)
-        
-        if best and best[1] >= threshold:
-            match_name = best[0]
-            match_score = best[1]
-            match_id = [s[0] for s in search_space if s[1] == match_name][0]
-            
-            return Product.objects.get(id=match_id)
-            
-        return None
+        # 4. A strong text score must not merge different package sizes.
+        # If either side names a size, require the other side to name the same
+        # dimension and within 5%; this also handles 1 L vs 1000 ml.
+        query_size = ProductMatchingService._size_signature(name)
+        ranked = []
+        for candidate in candidates:
+            names = {candidate['name'], candidate['display_name'] or candidate['name']}
+            best_score = 0
+            for candidate_name in names:
+                candidate_size = ProductMatchingService._size_signature(candidate_name)
+                if query_size or candidate_size:
+                    if not query_size or not candidate_size or query_size[0] != candidate_size[0]:
+                        continue
+                    denominator = max(query_size[1], candidate_size[1])
+                    if not denominator or abs(query_size[1] - candidate_size[1]) / denominator > Decimal('0.05'):
+                        continue
+                best_score = max(
+                    best_score,
+                    fuzz.token_set_ratio(str(name).upper(), str(candidate_name).upper()),
+                )
+            if best_score >= threshold:
+                ranked.append((best_score, candidate['id']))
+
+        if not ranked:
+            return None
+        ranked.sort(key=lambda entry: (-entry[0], entry[1]))
+        return Product.objects.filter(id=ranked[0][1]).first()

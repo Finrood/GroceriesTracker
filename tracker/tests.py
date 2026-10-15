@@ -70,6 +70,19 @@ class AnalyticsBoundaryTests(TestCase):
         Product.objects.create(name="No weight", parent=master)
         self.assertEqual(AnalyticsService.get_shrinkflation_report(self.user), [])
 
+    def test_category_radar_ignores_missing_normalized_prices(self):
+        category = Category.objects.create(name='No normalized data')
+        product = Product.objects.create(name='UNNORMALIZED', category=category)
+        store = Store.objects.create(name='Radar Store', cnpj='88888888000188')
+        PriceHistory.objects.create(
+            user=self.user, product=product, store=store,
+            date=timezone.now(), unit_price=Decimal('5.00'),
+            normalized_price=None)
+
+        result = AnalyticsService.get_category_radar(self.user)
+        self.assertEqual(result['indicators'], [])
+        self.assertEqual(result['stores'], [])
+
 class EnrichmentChainTests(TestCase):
     @patch('tracker.enrichment.requests.get')
     def test_aggregator_resilience(self, mock_get):
@@ -77,9 +90,9 @@ class EnrichmentChainTests(TestCase):
         # as 7891234567890 fail validation and must skip the GTIN APIs).
         product = Product.objects.create(name="Test Prod", code_gtin="7891097103643")
 
-        ml_html = '<div class="ui-search-result__content"><h2 class="ui-search-item__title">Test Prod Original 500g</h2><img class="ui-search-result-image__element" src="http://img.jpg"></div>'
+        ml_html = '<div class="ui-search-result__content"><h2 class="ui-search-item__title">Test Prod Original 500g</h2><img class="ui-search-result-image__element" src="https://http2.mlstatic.com/image.jpg"></div>'
 
-        def fake_get(url, params=None, headers=None, timeout=None):
+        def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
             if 'search.pl' in url:
                 resp = MagicMock(status_code=200)
                 resp.json.return_value = {"products": []}
@@ -94,7 +107,7 @@ class EnrichmentChainTests(TestCase):
         success = ProductEnrichmentService.enrich_product(product)
         self.assertTrue(success)
         self.assertEqual(product.display_name, "Test Prod Original 500g")
-        self.assertEqual(product.image_url, "http://img.jpg")
+        self.assertEqual(product.image_url, "https://http2.mlstatic.com/image.jpg")
 
 class SplitTripOptimizerTests(TestCase):
     def setUp(self):
@@ -163,7 +176,7 @@ class EnrichmentServiceTests(TestCase):
         # 1. Setup mock response for name search
         from .enrichment import ProductEnrichmentService
 
-        def fake_get(url, params=None, headers=None, timeout=None):
+        def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
             if 'search.pl' in url or 'openfoodfacts' in url or 'openbeautyfacts' in url:
                 resp = MagicMock(status_code=200)
                 resp.json.return_value = {"status": 0, "products": []}
@@ -173,14 +186,14 @@ class EnrichmentServiceTests(TestCase):
                 resp.json.return_value = {"results": [{
                     "id": "MLB1",
                     "title": "Simple Name Premium 500g",
-                    "thumbnail": "http://test.com/img-thumb.jpg",
+                    "thumbnail": "https://http2.mlstatic.com/img-thumb.jpg",
                     "sold_quantity": 10,
                 }]}
                 return resp
             if 'api.mercadolibre.com/items' in url:
                 resp = MagicMock(status_code=200)
                 resp.json.return_value = {"pictures": [
-                    {"secure_url": "http://test.com/img-big.jpg"}]}
+                    {"secure_url": "https://http2.mlstatic.com/img-big.jpg"}]}
                 return resp
             return MagicMock(status_code=404)
         mock_get.side_effect = fake_get
@@ -194,7 +207,7 @@ class EnrichmentServiceTests(TestCase):
         success = ProductEnrichmentService.enrich_product(p)
 
         self.assertTrue(success)
-        self.assertEqual(p.image_url, "http://test.com/img-big.jpg")
+        self.assertEqual(p.image_url, "https://http2.mlstatic.com/img-big.jpg")
         self.assertEqual(p.display_name, "Simple Name Premium 500g")
 
     def test_heuristic_guessing(self):
@@ -220,6 +233,34 @@ class EnrichmentV2Tests(TestCase):
         resp.json.return_value = payload
         return resp
 
+    def test_image_urls_are_https_and_allowlisted(self):
+        from .enrichment import ProductEnrichmentService
+        self.assertEqual(
+            ProductEnrichmentService._safe_image_url(
+                'http://images.openfoodfacts.org/front.jpg'),
+            'https://images.openfoodfacts.org/front.jpg')
+        for url in (
+            'https://openfoodfacts.org.attacker.example/front.jpg',
+            'https://user@images.openfoodfacts.org/front.jpg',
+            'https://127.0.0.1/front.jpg',
+            'https://images.openfoodfacts.org:8443/front.jpg',
+        ):
+            self.assertIsNone(ProductEnrichmentService._safe_image_url(url), url)
+
+    @patch('tracker.enrichment.requests.get')
+    def test_image_redirect_to_untrusted_host_is_rejected(self, mock_get):
+        from .enrichment import ProductEnrichmentService
+        product = Product.objects.create(
+            name='REDIRECT TEST',
+            image_url='https://images.openfoodfacts.org/front.jpg')
+        response = MagicMock(status_code=302)
+        response.headers = {'Location': 'http://169.254.169.254/latest/meta-data'}
+        mock_get.return_value = response
+
+        self.assertFalse(ProductEnrichmentService.download_local_image(product))
+        mock_get.assert_called_once()
+        response.close.assert_called_once()
+
     @patch('tracker.enrichment.requests.get')
     def test_off_v2_uses_fields_and_identifying_ua(self, mock_get):
         from .enrichment import ProductEnrichmentService
@@ -233,11 +274,11 @@ class EnrichmentV2Tests(TestCase):
                 "nutriscore_grade": "C",
                 "ecoscore_grade": "d",
                 "nutriments": {"sugars_100g": 0.2},
-                "image_front_url": "http://off.test/front.jpg",
+                "image_front_url": "https://images.openfoodfacts.org/front.jpg",
             },
         }
 
-        def fake_get(url, params=None, headers=None, timeout=None):
+        def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
             if 'search.pl' in url:
                 return self._json_mock({"products": []})
             if 'openfoodfacts' in url or 'openbeautyfacts' in url:
@@ -262,7 +303,7 @@ class EnrichmentV2Tests(TestCase):
         self.assertEqual(p.metadata['nutriscore'], 'c')
         self.assertEqual(p.metadata['ecoscore'], 'd')
         self.assertEqual(p.metadata['nutrition'], {"sugars_100g": 0.2})
-        self.assertEqual(p.image_url, "http://off.test/front.jpg")
+        self.assertEqual(p.image_url, "https://images.openfoodfacts.org/front.jpg")
         self.assertEqual(p.metadata['source_image_url'], 'off_gtin')
 
     @patch('tracker.enrichment.requests.get')
@@ -270,26 +311,26 @@ class EnrichmentV2Tests(TestCase):
         """A weak ml_search image must not overwrite an off_gtin image."""
         from .enrichment import ProductEnrichmentService
 
-        def fake_get(url, params=None, headers=None, timeout=None):
+        def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
             if 'api.mercadolibre.com/sites' in url:
                 return self._json_mock({"results": [{
                     "id": "MLB9", "title": "Arroz Branco Tipo 1 5kg",
-                    "thumbnail": "http://ml.test/other-thumb.jpg",
+                    "thumbnail": "https://http2.mlstatic.com/other-thumb.jpg",
                     "sold_quantity": 99}]})
             if 'api.mercadolibre.com/items' in url:
                 return self._json_mock({"pictures": [
-                    {"secure_url": "http://ml.test/other-big.jpg"}]})
+                    {"secure_url": "https://http2.mlstatic.com/other-big.jpg"}]})
             return MagicMock(status_code=404)
         mock_get.side_effect = fake_get
 
         p = Product.objects.create(
             name="ARROZ BRANCO", display_name="Arroz Branco",
-            image_url="http://off.test/front.jpg",
+            image_url="https://images.openfoodfacts.org/front.jpg",
             metadata={'source_image_url': 'off_gtin',
                       'source_display_name': 'off_gtin'})
         result = ProductEnrichmentService._search_by_name(p)
         self.assertFalse(result)
-        self.assertEqual(p.image_url, "http://off.test/front.jpg")
+        self.assertEqual(p.image_url, "https://images.openfoodfacts.org/front.jpg")
         self.assertEqual(p.display_name, "Arroz Branco")
 
     @patch('tracker.enrichment.requests.get')
@@ -297,11 +338,11 @@ class EnrichmentV2Tests(TestCase):
         """A top result for a different product must be rejected entirely."""
         from .enrichment import ProductEnrichmentService
 
-        def fake_get(url, params=None, headers=None, timeout=None):
+        def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
             if 'api.mercadolibre.com/sites' in url:
                 return self._json_mock({"results": [{
                     "id": "MLB7", "title": "Kit Kat Chocolate Ao Leite 90g",
-                    "thumbnail": "http://ml.test/kitkat.jpg",
+                    "thumbnail": "https://http2.mlstatic.com/kitkat.jpg",
                     "sold_quantity": 500}]})
             return MagicMock(status_code=404)
         mock_get.side_effect = fake_get
@@ -314,14 +355,14 @@ class EnrichmentV2Tests(TestCase):
     def test_obf_lookup_for_personal_care(self, mock_get):
         from .enrichment import ProductEnrichmentService
 
-        def fake_get(url, params=None, headers=None, timeout=None):
+        def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
             if 'search.pl' in url:
                 return self._json_mock({"products": []})
             if 'openbeautyfacts' in url:
                 return self._json_mock({"status": 1, "product": {
                     "code": "7891097103643",
                     "product_name": "Shampoo Anticaspa Clear",
-                    "image_front_url": "http://obf.test/front.jpg"}})
+                    "image_front_url": "https://images.openbeautyfacts.org/front.jpg"}})
             if 'openfoodfacts' in url:
                 return self._json_mock({"status": 0})
             return MagicMock(status_code=404)
@@ -334,14 +375,14 @@ class EnrichmentV2Tests(TestCase):
                             for c in mock_get.call_args_list))
         self.assertEqual(p.display_name, "Shampoo Anticaspa Clear")
         self.assertEqual(p.metadata['source_display_name'], 'obf_gtin')
-        self.assertEqual(p.image_url, "http://obf.test/front.jpg")
+        self.assertEqual(p.image_url, "https://images.openbeautyfacts.org/front.jpg")
 
     @patch('tracker.enrichment.requests.get')
     def test_meli_catalog_with_token(self, mock_get):
         from django.test import override_settings
         from .enrichment import ProductEnrichmentService
 
-        def fake_get(url, params=None, headers=None, timeout=None):
+        def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
             if 'search.pl' in url:
                 return self._json_mock({"products": []})
             if 'openfoodfacts' in url or 'openbeautyfacts' in url:
@@ -350,7 +391,7 @@ class EnrichmentV2Tests(TestCase):
                 return self._json_mock({"results": [{
                     "id": "MLB123", "name": "Leite Integral Tirol 1L",
                     "attributes": [{"id": "BRAND", "value_name": "Tirol"}],
-                    "pictures": [{"secure_url": "http://ml.test/catalog.jpg"}]}]})
+                    "pictures": [{"secure_url": "https://http2.mlstatic.com/catalog.jpg"}]}]})
             if 'api.mercadolibre.com/sites' in url:
                 return self._json_mock({"results": []})
             return MagicMock(status_code=404)
@@ -367,7 +408,7 @@ class EnrichmentV2Tests(TestCase):
                          'Bearer test-token')
         self.assertEqual(p.display_name, "Leite Integral Tirol 1L")
         self.assertEqual(p.brand, "Tirol")
-        self.assertEqual(p.image_url, "http://ml.test/catalog.jpg")
+        self.assertEqual(p.image_url, "https://http2.mlstatic.com/catalog.jpg")
         self.assertEqual(p.metadata['source_image_url'], 'meli_catalog')
 
     def _png_bytes(self, size):
@@ -387,12 +428,13 @@ class EnrichmentV2Tests(TestCase):
         resp = MagicMock(status_code=200)
         resp.content = self._png_bytes((200, 200))
         resp.headers = {'Content-Type': 'image/png'}
+        resp.iter_content.return_value = [resp.content]
         mock_get.return_value = resp
 
         with tempfile.TemporaryDirectory() as tmp:
             with override_settings(MEDIA_ROOT=tmp):
                 p = Product.objects.create(name="UVA BRANCA SEM SEMENTE 500G")
-                p.image_url = "http://test.com/a.jpg"
+                p.image_url = "https://http2.mlstatic.com/a.jpg"
                 self.assertTrue(
                     ProductEnrichmentService.download_local_image(p))
                 self.assertTrue(p.local_image.name.startswith('products/noid-'))
@@ -405,12 +447,13 @@ class EnrichmentV2Tests(TestCase):
         resp = MagicMock(status_code=200)
         resp.content = self._png_bytes((50, 50))
         resp.headers = {'Content-Type': 'image/png'}
+        resp.iter_content.return_value = [resp.content]
         mock_get.return_value = resp
 
         with tempfile.TemporaryDirectory() as tmp:
             with override_settings(MEDIA_ROOT=tmp):
                 p = Product.objects.create(name="TINY THUMB PRODUCT")
-                p.image_url = "http://test.com/thumb.jpg"
+                p.image_url = "https://http2.mlstatic.com/thumb.jpg"
                 self.assertFalse(
                     ProductEnrichmentService.download_local_image(p))
                 self.assertFalse(bool(p.local_image))
@@ -423,6 +466,9 @@ class EnrichmentV2Tests(TestCase):
         self.assertEqual(Svc._fetch_json('http://x', retries=0)[1], 'not_found')
         mock_get.return_value = MagicMock(status_code=403)
         self.assertEqual(Svc._fetch_json('http://x', retries=0)[1], 'blocked')
+        mock_get.return_value = MagicMock(status_code=200)
+        mock_get.return_value.json.return_value = []
+        self.assertEqual(Svc._fetch_json('http://x', retries=0)[1], 'bad_payload')
         mock_get.side_effect = rq.Timeout()
         self.assertEqual(Svc._fetch_json('http://x', retries=0)[1], 'timeout')
         mock_get.side_effect = None
@@ -481,6 +527,12 @@ class SemanticMatchingTests(TestCase):
             display_name="Leite Tirol Integral 1L",
             brand="Tirol",
             category=self.cat
+        )
+        self.user = User.objects.create_user(username='semantic_history', password='p')
+        self.store = Store.objects.create(name='Semantic Store', cnpj='33333333000133')
+        PriceHistory.objects.create(
+            user=self.user, product=self.prod, store=self.store,
+            date=timezone.now(), unit_price=Decimal('5.00'),
         )
 
     def test_fuzzy_match_different_order(self):
@@ -859,7 +911,9 @@ class StoreChainTests(TestCase):
                             'series': '1', 'number': '1', 'total_amount': D('5'),
                             'discount': 0, 'payment_method': 'X', 'tax_federal': 0,
                             'tax_state': 0, 'tax_municipal': 0, 'consumer_cpf': None},
-                'items': []}
+                'items': [{'name': 'Fallback Product', 'quantity': D('1'),
+                           'unit_price': D('5'), 'total_price': D('5'),
+                           'unit_type': 'UN', 'category': 'Geral'}]}
         with patch('tracker.services.async_task'):
             r1 = ReceiptService.save_scraped_data(dict(data), 'http://x/1', user)
             data['receipt']['access_key'] = '5' * 44
@@ -990,7 +1044,9 @@ class ScraperDomainTests(TestCase):
         from tracker.scraper import NFCeScraper as S
         for h in ['localhost', '127.0.0.1', '169.254.169.254', 'evil-site.com',
                   'sefaz.ba.gov.br.evil.com', 'nfce.sefaz.xx.gov.br', '',
-                  'evilsefaz.ba.gov.br', None]:
+                  'evilsefaz.ba.gov.br',
+                  'nfce.fazenda.sp.gov.br.attacker.gov.br',
+                  'x.sefaz.rs.gov.br.evil.gov.br', None]:
             self.assertFalse(S._is_allowed_host(h), repr(h))
 
     def test_scrape_url_rejects_bad_scheme_and_host(self):
@@ -1031,7 +1087,9 @@ class DashboardCacheTests(TestCase):
                             'series': '1', 'number': '1', 'total_amount': D('5'),
                             'discount': 0, 'payment_method': 'X', 'tax_federal': 0,
                             'tax_state': 0, 'tax_municipal': 0, 'consumer_cpf': None},
-                'items': []}
+                'items': [{'name': 'Cache Product', 'quantity': D('1'),
+                           'unit_price': D('5'), 'total_price': D('5'),
+                           'unit_type': 'UN', 'category': 'Geral'}]}
         with patch('tracker.services.async_task'):
             ReceiptService.save_scraped_data(data, 'http://x/1', user)
         self.assertGreater(dashboard_cache_version(), before)
@@ -1045,6 +1103,24 @@ class AdminRegistryTests(TestCase):
         for model in (StoreChain, Store, Category, Product, ProductMapping,
                       Receipt, PriceHistory, ScrapeLog):
             self.assertIn(model, dj_admin.site._registry)
+
+
+class ConfigureSchedulesTests(TestCase):
+    def test_maintenance_schedule_is_idempotent(self):
+        from django.core.management import call_command
+        from django_q.models import Schedule
+
+        call_command('configure_schedules', verbosity=0)
+        first = Schedule.objects.get(name='GroceriesTracker daily maintenance')
+        first_id = first.pk
+        call_command('configure_schedules', verbosity=0)
+
+        self.assertEqual(Schedule.objects.filter(
+            func='tracker.tasks.maintenance_requeue_enrichment').count(), 1)
+        first.refresh_from_db()
+        self.assertEqual(first.pk, first_id)
+        self.assertEqual(first.schedule_type, Schedule.DAILY)
+        self.assertEqual(first.repeats, -1)
 
 
 class CanonicalGroupingTests(TestCase):
@@ -1448,10 +1524,10 @@ class SmartCartMatchingTests(TestCase):
                                     date=tz.now(), unit_price=D('7'),
                                     normalized_price=D('7'))
         # ...but 'tomate' must match the fresh tomato (whole word)
-        match = SmartCartService._match_row('tomate')
+        match = SmartCartService._match_row(user, 'tomate')
         self.assertEqual(match.id, fresh.id)
         # An unmatched line yields None
-        self.assertIsNone(SmartCartService._match_row('zzz unobtainium'))
+        self.assertIsNone(SmartCartService._match_row(user, 'zzz unobtainium'))
 
 
 class MoversSignalsBasketTests(TestCase):
@@ -1521,6 +1597,46 @@ class MoversSignalsBasketTests(TestCase):
         self.assertEqual(len(res['coverage']), 3)
         self.assertEqual(res['basket_size'], 2)
         self.assertGreater(res['totals'][-1], 0)  # current month has the riser
+
+    def test_basket_months_follow_sao_paulo_calendar(self):
+        from zoneinfo import ZoneInfo
+        utc = ZoneInfo('UTC')
+        # 01:00 UTC on Jan 1 is still Dec 31 in São Paulo. This observation
+        # must remain in December instead of appearing in the January basket.
+        PriceHistory.objects.create(
+            user=self.user, product=self.riser, store=self.store,
+            date=datetime(2027, 1, 1, 1, tzinfo=utc),
+            unit_price=self.D('10'), normalized_price=self.D('10'))
+        with patch('tracker.services.timezone.now',
+                   return_value=datetime(2027, 1, 1, 4, tzinfo=utc)):
+            result = AnalyticsService.get_basket_over_time(
+                self.user, months=1, top_n=10)
+        self.assertEqual(result['labels'], ['Jan 2027'])
+        self.assertEqual(result['totals'], [0.0])
+
+    def test_candlesticks_group_by_local_month(self):
+        from zoneinfo import ZoneInfo
+        utc = ZoneInfo('UTC')
+        PriceHistory.objects.create(
+            user=self.user, product=self.riser, store=self.store,
+            date=datetime(2027, 1, 1, 1, tzinfo=utc),
+            unit_price=self.D('10'), normalized_price=self.D('10'))
+        result = AnalyticsService.get_product_candlesticks(
+            self.user, self.riser.pk)
+        self.assertEqual([row['date'] for row in result], ['2026-12'])
+
+    def test_spending_forecast_uses_local_month_start(self):
+        from zoneinfo import ZoneInfo
+        utc = ZoneInfo('UTC')
+        receipt = Receipt.objects.create(
+            user=self.user, store=self.store, access_key='9' * 44,
+            issue_date=datetime(2027, 1, 1, 1, tzinfo=utc),
+            total_amount=self.D('10'))
+        with patch('tracker.services.timezone.now',
+                   return_value=datetime(2027, 1, 1, 4, tzinfo=utc)):
+            result = AnalyticsService.get_spending_forecast(self.user)
+        # The receipt is Dec 31 locally and belongs in the historical anchor.
+        self.assertEqual(result['current'], 0.0)
 
 
 class DashboardBasicsTests(TestCase):
@@ -1691,7 +1807,7 @@ class FetchIpcaSeriesTests(TestCase):
 class RobustnessSweepTests(TestCase):
     def test_toast_escapes_quotes_for_js(self):
         """Store names with quotes must not break the toast JS string."""
-        user = User.objects.create_user(username='toast_q', password='p')
+        user = User.objects.create_user(username='toast_q', password='p', is_staff=True)
         self.client.force_login(user)
         resp = self.client.post('/tracker/categories/add/',
                                 {'name': 'Q"X'}, secure=True, follow=True)
@@ -1749,3 +1865,83 @@ class RobustnessSweepTests(TestCase):
         with patch('tracker.tasks.async_task'):
             maintenance_requeue_enrichment(batch_size=0)
         self.assertFalse(SessionStore().exists(key))
+
+
+class ProductOwnershipViewTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username='product_owner', password='p')
+        self.other = User.objects.create_user(username='other_product_user', password='p')
+        self.store = Store.objects.create(name='Private Store', cnpj='77777777000177')
+        self.product = Product.objects.create(
+            name='PRIVATE PRODUCT 500G', display_name='Private Product 500g')
+        self.category = Category.objects.create(name='Private Category')
+        receipt = Receipt.objects.create(
+            user=self.owner, store=self.store, access_key='7' * 44,
+            issue_date=timezone.now(), total_amount=Decimal('5.00'))
+        ReceiptItem.objects.create(
+            receipt=receipt, product=self.product, quantity=1, unit_type='UN',
+            unit_price=Decimal('5.00'), total_price=Decimal('5.00'))
+
+    def test_other_account_cannot_view_or_edit_product(self):
+        client = Client()
+        client.force_login(self.other)
+
+        history = client.get(reverse('product_history', args=[self.product.pk]), secure=True)
+        self.assertEqual(history.status_code, 404)
+
+        response = client.post(
+            reverse('update_product_details'),
+            {'product_id': self.product.pk, 'display_name': 'Tampered Product'},
+            secure=True)
+        self.assertEqual(response.status_code, 302)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.display_name, 'Private Product 500g')
+
+        response = client.post(
+            reverse('update_product_category'),
+            {'product_id': self.product.pk, 'category_id': self.category.pk},
+            secure=True)
+        self.assertEqual(response.status_code, 302)
+
+    def test_owner_can_view_product_history(self):
+        client = Client()
+        client.force_login(self.owner)
+        response = client.get(
+            reverse('product_history', args=[self.product.pk]), secure=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Edit Details')
+
+    def test_analytics_template_renders_for_normal_user(self):
+        client = Client()
+        client.force_login(self.owner)
+        response = client.get(reverse('analytics_dashboard'), secure=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "action=\"/tracker/product/link-variant/")
+
+    def test_category_page_lists_only_own_products(self):
+        client = Client()
+        client.force_login(self.other)
+        response = client.get(reverse('category_list'), secure=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Private Product 500g')
+        self.assertNotContains(response, 'New Category')
+
+        response = client.post(
+            reverse('category_update'),
+            {'id': self.category.pk, 'name': 'Changed Globally'}, secure=True)
+        self.assertEqual(response.status_code, 302)
+        self.category.refresh_from_db()
+        self.assertEqual(self.category.name, 'Private Category')
+
+    def test_staff_can_update_shared_product_catalog(self):
+        staff = User.objects.create_user(
+            username='catalog_staff', password='p', is_staff=True)
+        client = Client()
+        client.force_login(staff)
+        response = client.post(
+            reverse('update_product_details'),
+            {'product_id': self.product.pk, 'display_name': 'Corrected Product'},
+            secure=True)
+        self.assertEqual(response.status_code, 302)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.display_name, 'Corrected Product')

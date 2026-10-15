@@ -46,7 +46,7 @@
             <p class="text-muted text-sm mb-6">Trigger background enrichment for products. Note: This uses third-party APIs (Open Food Facts, Mercado Livre, etc.).</p>
             
             <div class="flex gap-4 flex-wrap">
-                <form method="POST" class="flex-1 min-w-200">
+                <form method="POST" class="flex-1 min-w-200" data-confirm="WARNING: This will re-scan ALL products. Are you sure?">
                     {% csrf_token %}
                     <input type="hidden" name="action" value="requeue_missing">
                     <button type="submit" class="btn btn-primary w-full py-6 flex-col items-center">
@@ -55,19 +55,19 @@
                     </button>
                 </form>
 
-                <form method="POST" class="flex-1 min-w-200">
+                <form method="POST" class="flex-1 min-w-200" data-confirm="WARNING: This will re-scan ALL products. Are you sure?">
                     {% csrf_token %}
                     <input type="hidden" name="action" value="requeue_all">
-                    <button type="submit" class="btn btn-secondary w-full py-6 flex-col items-center border-2" onclick="return confirm('WARNING: This will re-scan ALL products. Are you sure?')">
+                    <button type="submit" class="btn btn-secondary w-full py-6 flex-col items-center border-2">
                         <span class="block text-xl">🔄 Force All</span>
                         <span class="block text-xs font-normal opacity-90 mt-1">Refresh all data from all sources</span>
                     </button>
                 </form>
 
-                <form method="POST" class="flex-1 min-w-200">
+                <form method="POST" class="flex-1 min-w-200" data-confirm="Are you sure you want to clear the pending queue?">
                     {% csrf_token %}
                     <input type="hidden" name="action" value="purge_queue">
-                    <button type="submit" class="btn btn-danger w-full py-6 flex-col items-center" onclick="return confirm('Are you sure you want to clear the pending queue?')">
+                    <button type="submit" class="btn btn-danger w-full py-6 flex-col items-center">
                         <span class="block text-xl">🗑️ Purge Queue</span>
                         <span class="block text-xs font-normal opacity-90 mt-1">Clear all pending background tasks</span>
                     </button>
@@ -120,8 +120,8 @@
                         Linked to: <span class="text-secondary">{{ m.product_name }}</span>
                     </div>
                     <div class="flex gap-2">
-                        <button onclick="handleMapping({{ m.id }}, 'confirm')" class="btn btn-primary flex-1 text-xs py-2">Confirm ✅</button>
-                        <button onclick="handleMapping({{ m.id }}, 'delete')" class="btn btn-danger flex-1 text-xs py-2">Unlink ❌</button>
+                        <button type="button" data-mapping-id="{{ m.id }}" data-mapping-action="confirm" class="btn btn-primary flex-1 text-xs py-2">Confirm ✅</button>
+                        <button type="button" data-mapping-id="{{ m.id }}" data-mapping-action="delete" class="btn btn-danger flex-1 text-xs py-2">Unlink ❌</button>
                     </div>
                 </div>
                 {% endfor %}
@@ -142,8 +142,8 @@
                         {{ s.name_a }}<br><span class="text-muted text-sm">≈ {{ s.name_b }}</span>
                     </div>
                     <div class="flex gap-2">
-                        <button onclick="handleSuggestion({{ s.id }}, 'accept')" class="btn btn-primary flex-1 text-xs py-2">Merge ✅</button>
-                        <button onclick="handleSuggestion({{ s.id }}, 'dismiss')" class="btn btn-danger flex-1 text-xs py-2">Not same ❌</button>
+                        <button type="button" data-suggestion-id="{{ s.id }}" data-suggestion-action="accept" class="btn btn-primary flex-1 text-xs py-2">Merge ✅</button>
+                        <button type="button" data-suggestion-id="{{ s.id }}" data-suggestion-action="dismiss" class="btn btn-danger flex-1 text-xs py-2">Not same ❌</button>
                     </div>
                 </div>
                 {% endfor %}
@@ -209,17 +209,19 @@
     </div>
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
     function handleMapping(mappingId, action) {
         const formData = new FormData();
         formData.append('action', action + '_mapping');
         formData.append('mapping_id', mappingId);
-        formData.append('csrfmiddlewaretoken', '{{ csrf_token }}');
 
         fetch(window.location.pathname, {
             method: 'POST',
             body: formData,
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+            }
         })
         .then(response => response.json())
         .then(data => {
@@ -235,12 +237,14 @@
         const formData = new FormData();
         formData.append('action', action + '_suggestion');
         formData.append('suggestion_id', suggestionId);
-        formData.append('csrfmiddlewaretoken', '{{ csrf_token }}');
 
         fetch(window.location.pathname, {
             method: 'POST',
             body: formData,
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+            }
         })
         .then(response => response.json())
         .then(data => {
@@ -252,6 +256,18 @@
         });
     }
 
+    document.addEventListener('click', event => {
+        const mappingButton = event.target.closest('[data-mapping-id]');
+        if (mappingButton) {
+            handleMapping(mappingButton.dataset.mappingId, mappingButton.dataset.mappingAction);
+            return;
+        }
+        const suggestionButton = event.target.closest('[data-suggestion-id]');
+        if (suggestionButton) {
+            handleSuggestion(suggestionButton.dataset.suggestionId, suggestionButton.dataset.suggestionAction);
+        }
+    });
+
     function refreshStats() {
         const indicator = document.getElementById('update-indicator');
         indicator.style.opacity = '0.2';
@@ -262,7 +278,10 @@
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
             cache: 'no-store'
         })
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) throw new Error(`Maintenance refresh failed (${response.status})`);
+            return response.json();
+        })
         .then(data => {
             document.getElementById('stat-total_products').innerText = data.total_products;
             document.getElementById('stat-queued_tasks').innerText = data.queued_tasks;
@@ -278,16 +297,18 @@
                 if (mappingContainer.children.length !== data.unconfirmed_mappings.length) {
                     let mHtml = '';
                     data.unconfirmed_mappings.forEach(m => {
-                        mHtml += `<div id="mapping-${m.id}" style="background: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+                        const id = Number(m.id);
+                        if (!Number.isSafeInteger(id) || id < 1) return;
+                        mHtml += `<div id="mapping-${id}" style="background: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
                             <div class="text-xs text-muted mb-2">
-                                STORE: <strong>${m.store_name}</strong> | CODE: <code>${m.internal_code}</code>
+                                STORE: <strong>${escapeHtml(m.store_name)}</strong> | CODE: <code>${escapeHtml(m.internal_code)}</code>
                             </div>
                             <div class="font-bold mb-4">
-                                Linked to: <span class="text-secondary">${m.product_name}</span>
+                                Linked to: <span class="text-secondary">${escapeHtml(m.product_name)}</span>
                             </div>
                             <div class="flex gap-2">
-                                <button onclick="handleMapping(${m.id}, 'confirm')" class="btn btn-primary flex-1 text-xs py-2">Confirm ✅</button>
-                                <button onclick="handleMapping(${m.id}, 'delete')" class="btn btn-danger flex-1 text-xs py-2">Unlink ❌</button>
+                                <button type="button" data-mapping-id="${id}" data-mapping-action="confirm" class="btn btn-primary flex-1 text-xs py-2">Confirm ✅</button>
+                                <button type="button" data-mapping-id="${id}" data-mapping-action="delete" class="btn btn-danger flex-1 text-xs py-2">Unlink ❌</button>
                             </div>
                         </div>`;
                     });
@@ -318,13 +339,13 @@
                         }
 
                         html += `<tr>
-                            <td><code class="text-xs">${t.id}</code></td>
-                            <td><strong>${t.name || ''}</strong><br><small class="text-muted">${t.func}</small></td>
+                            <td><code class="text-xs">${escapeHtml(t.id)}</code></td>
+                            <td><strong>${escapeHtml(t.name || '')}</strong><br><small class="text-muted">${escapeHtml(t.func)}</small></td>
                             <td>${statusBadge}</td>
                             <td>${t.time_taken ? t.time_taken.toFixed(2) : '0'}s</td>
                             <td>${stoppedTime}</td>
                             <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                                <span style="color: ${resultColor}; font-size: 0.7rem;" title="${t.result}">${resultText}</span>
+                                <span style="color: ${resultColor}; font-size: 0.7rem;" title="${escapeHtml(t.result)}">${escapeHtml(resultText)}</span>
                             </td>
                         </tr>`;
                     });
@@ -345,7 +366,9 @@
         });
     }
 
-    setInterval(refreshStats, 5000);
+    setInterval(() => {
+        if (!document.hidden) refreshStats();
+    }, 15000);
     refreshStats();
 </script>
 {% endblock %}

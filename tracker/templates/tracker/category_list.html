@@ -8,18 +8,22 @@
         <h1 class="page-title">Categories.</h1>
         <p class="text-muted">Organize your products for better inflation analysis.</p>
     </div>
-    <button onclick="document.getElementById('addCatForm').style.display='block'" class="btn btn-primary">➕ New Category</button>
+    {% if request.user.is_staff %}
+    <button type="button" data-action="show-add-category" class="btn btn-primary">➕ New Category</button>
+    {% endif %}
 </div>
 
+{% if request.user.is_staff %}
 <div id="addCatForm" class="card" style="display: none; border-left: 5px solid var(--primary);">
     <h3 class="card-title">Create New Category</h3>
     <form action="{% url 'category_create' %}" method="POST" class="flex gap-4">
         {% csrf_token %}
         <input type="text" name="name" placeholder="Category Name (e.g. Baby, Cleaning...)" required class="form-control" style="flex: 1;">
         <button type="submit" class="btn btn-primary">Create</button>
-        <button type="button" onclick="this.parentElement.parentElement.style.display='none'" class="btn btn-secondary">Cancel</button>
+        <button type="button" data-action="hide-add-category" class="btn btn-secondary">Cancel</button>
     </form>
 </div>
+{% endif %}
 
 <div class="card" style="padding: 0; overflow: hidden;">
     <div class="table-responsive">
@@ -35,27 +39,33 @@
                 {% for cat in categories %}
                 <tr>
                     <td>
+                        {% if request.user.is_staff %}
                         <form action="{% url 'category_update' %}" method="POST" class="flex gap-2 items-center">
                             {% csrf_token %}
                             <input type="hidden" name="id" value="{{ cat.id }}">
-                            <input type="text" name="name" value="{{ cat.name }}" style="padding: 5px 10px; border: 1px solid transparent; border-radius: 4px; font-weight: 700; background: transparent;" onfocus="this.style.border='1px solid var(--border)'; this.style.background='white';">
+                            <input type="text" name="name" value="{{ cat.name }}" style="padding: 5px 10px; border: 1px solid transparent; border-radius: 4px; font-weight: 700; background: transparent;">
                             <button type="submit" class="btn btn-secondary btn-sm">Rename</button>
                         </form>
+                        {% else %}
+                            <strong>{{ cat.name }}</strong>
+                        {% endif %}
                     </td>
                     <td>
                         <span class="badge badge-info">{{ cat.product_count }} products</span>
                         {% if cat.product_count > 0 %}
-                            <button onclick="toggleItems('cat-{{ cat.id }}')" class="btn btn-secondary btn-sm ml-2">🔍 View Items</button>
+                            <button type="button" data-toggle-row="cat-{{ cat.id }}" class="btn btn-secondary btn-sm ml-2">🔍 View Items</button>
                         {% endif %}
                     </td>
                     <td style="text-align: right;">
+                        {% if request.user.is_staff %}
                         {% if cat.product_count == 0 %}
-                        <form action="{% url 'category_delete' cat.id %}" method="POST" style="display: inline;" onsubmit="return confirm('Delete this empty category?')">
+                        <form action="{% url 'category_delete' cat.id %}" method="POST" style="display: inline;" data-confirm="Delete this empty category?">
                             {% csrf_token %}
                             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
                         </form>
                         {% else %}
                         <span class="badge badge-muted" title="Cannot delete: category not empty">Locked</span>
+                        {% endif %}
                         {% endif %}
                     </td>
                 </tr>
@@ -65,6 +75,7 @@
                             {% for p in cat.products.all %}
                             <div class="card mb-0 bg-white border border-gray-200 p-4">
                                 <strong class="block mb-2 text-sm">{{ p.display_name|default:p.name }}</strong>
+                                {% if request.user.is_staff %}
                                 <form action="{% url 'update_product_category' %}" method="POST">
                                     {% csrf_token %}
                                     <input type="hidden" name="product_id" value="{{ p.id }}">
@@ -77,6 +88,7 @@
                                         <button type="submit" class="btn btn-primary btn-sm" style="padding: 2px 8px;">Move</button>
                                     </div>
                                 </form>
+                                {% endif %}
                             </div>
                             {% endfor %}
                         </div>
@@ -88,10 +100,20 @@
     </div>
 </div>
 
-<script>
-function toggleItems(id) {
-    const el = document.getElementById(id);
-    el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
-}
+<script nonce="{{ csp_nonce }}">
+document.addEventListener('click', event => {
+    const action = event.target.closest('[data-action]');
+    if (action?.dataset.action === 'show-add-category') {
+        document.getElementById('addCatForm').style.display = 'block';
+    } else if (action?.dataset.action === 'hide-add-category') {
+        document.getElementById('addCatForm').style.display = 'none';
+    }
+
+    const toggle = event.target.closest('[data-toggle-row]');
+    if (toggle) {
+        const row = document.getElementById(toggle.dataset.toggleRow);
+        if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+    }
+});
 </script>
 {% endblock %}

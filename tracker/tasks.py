@@ -38,11 +38,13 @@ def async_enrich_product(product_id, **kwargs):
     except Product.DoesNotExist:
         error_msg = f"Product {product_id} not found"
         logger.error(error_msg)
-        return error_msg
-    except Exception as e:
-        error_msg = f"Error: {str(e)}"
-        logger.error(f"Enrichment task error for product {product_id}: {str(e)}", exc_info=True)
-        return error_msg
+        raise
+    except Exception:
+        # Let Django Q record the task as failed and apply its retry policy.
+        # Returning an error string incorrectly marked failed enrichment as
+        # successful, hiding failures from operations and preventing retries.
+        logger.exception("Enrichment task error for product %s", product_id)
+        raise
 
 def prune_completed_tasks(retention_days=None):
     if retention_days is None:

@@ -75,8 +75,8 @@
 {{ global_data|json_script:"global-data" }}
 {{ category_datasets|json_script:"category-datasets" }}
 
-<script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
-<script>
+<script nonce="{{ csp_nonce }}" src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+<script nonce="{{ csp_nonce }}">
     const labels = JSON.parse(document.getElementById('chart-labels').textContent);
     const globalData = JSON.parse(document.getElementById('global-data').textContent);
     const categoryDatasets = JSON.parse(document.getElementById('category-datasets').textContent);
@@ -84,7 +84,12 @@
     // 1. Global Chart
     const globalChart = echarts.init(document.getElementById('globalChart'));
     globalChart.setOption({
-        tooltip: { trigger: 'axis' },
+        tooltip: {
+            trigger: 'axis',
+            formatter: params => params.map(item =>
+                `${escapeHtml(item.axisValueLabel || item.name)}<br>R$ ${Number(item.value).toFixed(2)}`
+            ).join('<br>')
+        },
         xAxis: { type: 'category', data: JSON.parse(labels) },
         yAxis: { type: 'value', scale: true },
         series: [{
@@ -100,7 +105,12 @@
     // 2. Category Chart
     const categoryChart = echarts.init(document.getElementById('categoryChart'));
     categoryChart.setOption({
-        tooltip: { trigger: 'axis' },
+        tooltip: {
+            trigger: 'axis',
+            formatter: params => params.map(item =>
+                `${escapeHtml(item.axisValueLabel || item.name)}<br>${escapeHtml(item.seriesName)}: R$ ${Number(item.value).toFixed(2)}`
+            ).join('<br>')
+        },
         legend: { bottom: 0, icon: 'circle' },
         xAxis: { type: 'category', data: JSON.parse(labels) },
         yAxis: { type: 'value', scale: true },
@@ -142,7 +152,12 @@
                              lineStyle: {type: 'dashed'}});
             });
             chart.setOption({
-                tooltip: {trigger: 'axis', valueFormatter: v => v == null ? '—' : v + '%'},
+                tooltip: {
+                    trigger: 'axis',
+                    formatter: params => params.map(item =>
+                        `${escapeHtml(item.axisValueLabel || item.name)}<br>${escapeHtml(item.seriesName)}: ${item.value == null ? '—' : Number(item.value).toFixed(2) + '%'}`
+                    ).join('<br>')
+                },
                 legend: {bottom: 0, icon: 'circle'},
                 xAxis: {type: 'category', data: res.labels},
                 yAxis: {type: 'value', axisLabel: {formatter: '{value}%'}},
