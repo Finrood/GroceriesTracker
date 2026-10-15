@@ -1,4 +1,5 @@
 {% extends 'tracker/layout/base.html' %}
+{% load security_tags %}
 
 {% block title %}Receipt Detail - Grocery Tracker{% endblock %}
 
@@ -16,7 +17,7 @@
             {% csrf_token %}
             <button type="submit" class="btn btn-secondary text-primary">🔄 Refresh Scrape</button>
         </form>
-        <form action="{% url 'delete_receipt' receipt.id %}" method="POST" onsubmit="return confirm('Delete this receipt permanently?')">
+        <form action="{% url 'delete_receipt' receipt.id %}" method="POST" data-confirm="Delete this receipt permanently?">
             {% csrf_token %}
             <button type="submit" class="btn btn-danger">🗑️ Delete</button>
         </form>
@@ -51,23 +52,27 @@
                             <div class="flex gap-4 items-center">
                                 {% if item.product.local_image %}
                                     <img src="{{ item.product.local_image.url }}" style="width: 40px; height: 40px; object-fit: contain; border-radius: 4px; border: 1px solid var(--border);">
-                                {% elif item.product.image_url %}
-                                    <img src="{{ item.product.image_url }}" style="width: 40px; height: 40px; object-fit: contain; border-radius: 4px; border: 1px solid var(--border);">
+                                {% elif item.product.image_url|safe_product_image %}
+                                    <img src="{{ item.product.image_url|safe_product_image }}" style="width: 40px; height: 40px; object-fit: contain; border-radius: 4px; border: 1px solid var(--border);">
                                 {% else %}
                                     <div style="width: 40px; height: 40px; background: #f1f5f9; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem;">📦</div>
                                 {% endif %}
                                 <div>
                                     <strong class="text-main" style="font-size: 0.9375rem;">{{ item.product.display_name|default:item.product.name|truncatechars:50 }}</strong><br>
+                                    {% if request.user.is_staff %}
                                     <form action="{% url 'update_product_category' %}" method="POST" style="margin-top: 5px;">
                                         {% csrf_token %}
                                         <input type="hidden" name="product_id" value="{{ item.product.id }}">
-                                        <select name="category_id" onchange="this.form.submit()" style="font-size: 0.7rem; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border); background: #f8fafc; color: var(--text-muted); cursor: pointer;">
+                                        <select name="category_id" data-auto-submit style="font-size: 0.7rem; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border); background: #f8fafc; color: var(--text-muted); cursor: pointer;">
                                             <option value="{{ item.product.category.id }}" selected disabled hidden>{{ item.product.category.name }}</option>
                                             {% for cat in all_categories %}
                                                 <option value="{{ cat.id }}" {% if cat.id == item.product.category.id %}selected{% endif %}>{{ cat.name }}</option>
                                             {% endfor %}
                                         </select>
                                     </form>
+                                    {% else %}
+                                    <span class="badge badge-muted">{{ item.product.category.name|default:"Uncategorized" }}</span>
+                                    {% endif %}
                                 </div>
                             </div>
                         </td>

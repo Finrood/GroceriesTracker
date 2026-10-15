@@ -4,6 +4,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
+from django.utils.csp import CSP
 
 
 def get_ip(request):
@@ -32,10 +33,12 @@ class SecurityConfigurationTests(SimpleTestCase):
         self.assertNotIn('@transaction.atomic', inspect.getsource(views.confirm_refresh))
         self.assertIn('with transaction.atomic():', inspect.getsource(views.confirm_refresh))
 
-    def test_csp_report_only(self):
-        self.assertFalse(settings.SECURE_CSP)
-        self.assertEqual(settings.SECURE_CSP_REPORT_ONLY['default-src'], ["'self'"])
-        self.assertEqual(settings.SECURE_CSP_REPORT_ONLY['object-src'], ["'none'"])
+    def test_csp_is_enforced_with_nonces_and_no_inline_handlers(self):
+        self.assertEqual(settings.SECURE_CSP['default-src'], ["'self'"])
+        self.assertIn(CSP.NONCE, settings.SECURE_CSP['script-src'])
+        self.assertEqual(settings.SECURE_CSP['script-src-attr'], ["'none'"])
+        self.assertEqual(settings.SECURE_CSP['object-src'], ["'none'"])
+        self.assertFalse(getattr(settings, 'SECURE_CSP_REPORT_ONLY', None))
         self.assertIn('django.middleware.csp.ContentSecurityPolicyMiddleware', settings.MIDDLEWARE)
 
     def test_forged_forwarding_headers_are_not_trusted(self):

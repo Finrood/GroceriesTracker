@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from datetime import timedelta
 from django.utils.csp import CSP
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -21,21 +22,38 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(BASE_DIR / '.env')
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
+def env_bool(name, default=False):
+    """Read a boolean setting consistently and reject ambiguous values."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {'true', '1', 't', 'y', 'yes'}:
+        return True
+    if normalized in {'false', '0', 'f', 'n', 'no'}:
+        return False
+    raise ImproperlyConfigured(f"{name} must be a boolean value.")
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY')
-if not SECRET_KEY and os.getenv('DEBUG', 'False') == 'False':
-    from django.core.exceptions import ImproperlyConfigured
-    raise ImproperlyConfigured("The SECRET_KEY env var must be set in production.")
-SECRET_KEY = SECRET_KEY or 'django-insecure-fallback-key-for-dev'
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 't', 'y', 'yes')
+DEBUG = env_bool('DEBUG', False)
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'groceries.samuelpetre.com').split(',')
-if not ALLOWED_HOSTS or ALLOWED_HOSTS == ['']:
+# Never use a known fallback secret in a non-debug deployment. A generated
+# local-only key keeps development convenient without creating a shared key.
+SECRET_KEY = (os.getenv('SECRET_KEY') or '').strip()
+if not DEBUG and (
+    len(SECRET_KEY) < 50 or SECRET_KEY.startswith(('change-me', 'replace-with'))
+):
+    raise ImproperlyConfigured(
+        "Production requires SECRET_KEY to be a private random value of at least 50 characters."
+    )
+if not SECRET_KEY:
+    from django.core.management.utils import get_random_secret_key
+    SECRET_KEY = get_random_secret_key()
+
+ALLOWED_HOSTS = [host.strip() for host in os.getenv(
+    'ALLOWED_HOSTS', 'groceries.samuelpetre.com'
+).split(',') if host.strip()]
+if not ALLOWED_HOSTS:
     ALLOWED_HOSTS = ['groceries.samuelpetre.com']
 
 # Allow local development
@@ -44,20 +62,23 @@ ALLOWED_HOSTS += ['localhost', '127.0.0.1', '[::1]']
 # Proxy / HTTPS hardening (Cloudflare Tunnel -> http://192.168.1.50:8000)
 # Tunnel terminates TLS; Django must trust X-Forwarded-Proto for is_secure()/CSRF.
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-USE_X_FORWARDED_HOST = True
-USE_X_FORWARDED_PORT = True
+USE_X_FORWARDED_HOST = False
+USE_X_FORWARDED_PORT = False
 
 # CSRF + cookies for the public origin. Localhost stays usable for checks.
 CSRF_TRUSTED_ORIGINS = [
     o for o in os.getenv(
         'CSRF_TRUSTED_ORIGINS',
         'https://groceries.samuelpetre.com',
-    ).split(',') if o
+    ).split(',') if o.strip()
 ]
-SESSION_COOKIE_SECURE = os.getenv('SESSION_COOKIE_SECURE', 'True').lower() in ('true', '1', 't', 'y', 'yes')
-CSRF_COOKIE_SECURE = os.getenv('CSRF_COOKIE_SECURE', 'True').lower() in ('true', '1', 't', 'y', 'yes')
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS]
+SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', not DEBUG)
+CSRF_COOKIE_SECURE = env_bool('CSRF_COOKIE_SECURE', not DEBUG)
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = False  # must stay readable by Django admin JS
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
 X_FRAME_OPTIONS = 'DENY'
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = 'same-origin'
@@ -65,16 +86,24 @@ SECURE_REFERRER_POLICY = 'same-origin'
 # Force HTTPS for any request that arrives without X-Forwarded-Proto: https.
 # Safe here: Cloudflare Tunnel always sends the header, and the healthcheck
 # sends it explicitly so http://127.0.0.1:8000 checks stay redirect-free.
-SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'True').lower() in ('true', '1', 't', 'y', 'yes')
+SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', not DEBUG)
 
 # HSTS: 1 year. Env-overridable so you can relax it without editing code:
 #   SECURE_HSTS_INCLUDE_SUBDOMAINS=False  -> only this host is pinned to HTTPS
 # Note: every *.samuelpetre.com subdomain is published through Cloudflare as
 # HTTPS-only, so includeSubDomains is safe here. SSH (ssh.samuelpetre.com) is
 # unaffected: browsers only apply HSTS to HTTPS, never to ssh://.
-SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '31536000'))
-SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'True').lower() in ('true', '1', 't', 'y', 'yes')
-SECURE_HSTS_PRELOAD = os.getenv('SECURE_HSTS_PRELOAD', 'True').lower() in ('true', '1', 't', 'y', 'yes')
+SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '31536000' if not DEBUG else '0'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', not DEBUG)
+SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', not DEBUG)
+if SECURE_HSTS_SECONDS < 0:
+    raise ImproperlyConfigured('SECURE_HSTS_SECONDS cannot be negative.')
+if SECURE_HSTS_PRELOAD and (
+    SECURE_HSTS_SECONDS < 31536000 or not SECURE_HSTS_INCLUDE_SUBDOMAINS
+):
+    raise ImproperlyConfigured(
+        'HSTS preload requires at least one year and includeSubDomains.'
+    )
 
 # Application definition
 # ... (existing APPS and MIDDLEWARE) ...
@@ -134,8 +163,13 @@ Q_CLUSTER = {
     'name': 'GroceriesTrackerTasks',
     'workers': 1,
     'recycle': 500,
-    'timeout': 120,
-    'retry': 180,
+    # One enrichment task may check several external catalogs sequentially;
+    # keep Q from killing the task before its bounded HTTP retries finish.
+    # retry must remain greater than timeout to avoid duplicate live work.
+    'timeout': 600,
+    'retry': 660,
+    'max_attempts': 3,
+    'catch_up': False,
     'save_limit': 500, # Increased to reduce frequent DELETE operations
     'label': 'Django Q',
     'orm': 'default',
@@ -176,11 +210,11 @@ SILENCED_SYSTEM_CHECKS = [
     'axes.W006',
 ]
 
-SECURE_CSP = {}
-SECURE_CSP_REPORT_ONLY = {
+SECURE_CSP = {
     'default-src': [CSP.SELF],
-    'script-src': [CSP.SELF, 'https://cdn.jsdelivr.net'],
-    'style-src': [CSP.SELF, 'https://fonts.googleapis.com'],
+    'script-src': [CSP.SELF, CSP.NONCE, 'https://cdn.jsdelivr.net'],
+    'script-src-attr': [CSP.NONE],
+    'style-src': [CSP.SELF, CSP.UNSAFE_INLINE, 'https://fonts.googleapis.com'],
     'font-src': [CSP.SELF, 'https://fonts.gstatic.com'],
     'img-src': [CSP.SELF, 'data:', 'https:'],
     'connect-src': [CSP.SELF],
@@ -198,14 +232,14 @@ LOGOUT_REDIRECT_URL = 'login'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [BASE_DIR / 'templates']
-        ,
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'django.template.context_processors.csp',
                 'tracker.context_processors.admin_context',
             ],
         },
@@ -292,7 +326,7 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Django 4.2+ style storage config (replaces deprecated STATICFILES_STORAGE).

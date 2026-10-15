@@ -17,10 +17,12 @@ failures with backoff and returns a machine-readable outcome so background
 tasks can distinguish "not found" from "blocked/timeout" in the logs.
 """
 import logging
+import math
 import os
 import re
 import time
 import uuid
+from urllib.parse import urlsplit, urlunsplit, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -47,7 +49,10 @@ MELI_LIST_URL = "https://lista.mercadolivre.com.br/{}"
 # Minimum accepted image side (px). Rejects tracking pixels and tiny icon
 # thumbnails while keeping narrow-but-real product shots.
 MIN_IMAGE_SIDE_PX = 100
-ALLOWED_IMAGE_EXTS = ("jpg", "jpeg", "png", "webp", "gif")
+ALLOWED_IMAGE_FORMATS = {'JPEG': 'jpg', 'PNG': 'png', 'WEBP': 'webp'}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_PIXELS = 40_000_000
+MAX_IMAGE_FETCH_SECONDS = 30
 
 # Title-similarity floors (RapidFuzz token_set_ratio, 0-100). GTIN-identified
 # lookups are lenient because the barcode already identifies the product;
@@ -84,6 +89,43 @@ class ProductEnrichmentService:
         'heuristic': 20,
         'none': 0,
     }
+
+    @staticmethod
+    def _clean_nutrition(nutrients):
+        """Keep only finite, plausible per-100g values used by analytics."""
+        if not isinstance(nutrients, dict):
+            return {}
+        cleaned = {}
+        for field in ('sugars_100g', 'salt_100g', 'fat_100g'):
+            try:
+                value = float(nutrients.get(field))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(value) and 0 <= value <= 100:
+                cleaned[field] = value
+        return cleaned
+
+    @staticmethod
+    def _safe_image_url(url):
+        """Allow only HTTPS images from the enrichment providers we use."""
+        if not isinstance(url, str) or len(url) > 1000:
+            return None
+        try:
+            parsed = urlsplit(url.strip())
+            port = parsed.port
+        except ValueError:
+            return None
+        host = (parsed.hostname or '').lower().rstrip('.')
+        allowed = (
+            host == 'mlstatic.com' or host.endswith('.mlstatic.com') or
+            host == 'openfoodfacts.org' or host.endswith('.openfoodfacts.org') or
+            host == 'openbeautyfacts.org' or host.endswith('.openbeautyfacts.org')
+        )
+        if (parsed.scheme.lower() not in {'http', 'https'} or not allowed or
+                parsed.username or parsed.password or port not in (None, 80, 443)):
+            return None
+        # Avoid mixed content and ensure all later requests use TLS.
+        return urlunsplit(('https', host, parsed.path, parsed.query, ''))
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -128,13 +170,16 @@ class ProductEnrichmentService:
         for attempt in range(retries + 1):
             try:
                 res = requests.get(url, params=params, headers=headers,
-                                   timeout=timeout)
+                                   timeout=(5, timeout))
                 code = res.status_code
                 if code == 200:
                     try:
-                        return res.json(), 'ok'
+                        payload = res.json()
                     except ValueError:
                         return None, 'bad_payload'
+                    if not isinstance(payload, dict):
+                        return None, 'bad_payload'
+                    return payload, 'ok'
                 if code == 404:
                     return None, 'not_found'
                 if code == 429:
@@ -176,18 +221,66 @@ class ProductEnrichmentService:
             return False
         if product.local_image and not force:
             return False
+        image_url = ProductEnrichmentService._safe_image_url(product.image_url)
+        if not image_url:
+            logger.warning('Rejected image URL from unapproved host for product %s', product.id)
+            return False
         try:
-            response = requests.get(
-                product.image_url,
-                headers=ProductEnrichmentService._get_headers(),
-                timeout=15,
-            )
-            if response.status_code != 200:
-                logger.warning("Image download HTTP %s for product %s",
-                               response.status_code, product.id)
+            deadline = time.monotonic() + MAX_IMAGE_FETCH_SECONDS
+            for redirect_count in range(4):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning('Image request timed out for product %s', product.id)
+                    return False
+                response = requests.get(
+                    image_url,
+                    headers=ProductEnrichmentService._get_headers(),
+                    timeout=(min(5, remaining), min(10, remaining)),
+                    allow_redirects=False,
+                    stream=True,
+                )
+                if response.status_code in (301, 302, 303, 307, 308):
+                    location = response.headers.get('Location')
+                    response.close()
+                    if not location or redirect_count == 3:
+                        logger.warning('Rejected redirect chain for product image %s', product.id)
+                        return False
+                    image_url = ProductEnrichmentService._safe_image_url(urljoin(image_url, location))
+                    if not image_url:
+                        logger.warning('Rejected image redirect target for product %s', product.id)
+                        return False
+                    continue
+                try:
+                    response.raise_for_status()
+                except Exception:
+                    response.close()
+                    raise
+                content_type = response.headers.get('Content-Type', '').lower()
+                if content_type and not content_type.startswith('image/'):
+                    response.close()
+                    return False
+                content_length = response.headers.get('Content-Length')
+                if content_length and content_length.isdigit() and int(content_length) > MAX_IMAGE_BYTES:
+                    response.close()
+                    return False
+                content = bytearray()
+                try:
+                    for chunk in response.iter_content(chunk_size=64 * 1024):
+                        if time.monotonic() >= deadline:
+                            logger.warning('Image request timed out for product %s', product.id)
+                            return False
+                        if not chunk:
+                            continue
+                        content.extend(chunk)
+                        if len(content) > MAX_IMAGE_BYTES:
+                            return False
+                finally:
+                    response.close()
+                content = bytes(content)
+                break
+            else:
                 return False
-            content = response.content
-            if len(content) < 5120 or len(content) > 10 * 1024 * 1024:
+            if len(content) < 5120:
                 return False
             # Validate the payload is a real, sensibly-sized image before
             # serving it from our origin: a scraped "image" URL can return
@@ -196,24 +289,22 @@ class ProductEnrichmentService:
             from PIL import Image
             try:
                 img = Image.open(BytesIO(content))
+                image_format = img.format
+                if image_format not in ALLOWED_IMAGE_FORMATS:
+                    return False
+                if img.width * img.height > MAX_IMAGE_PIXELS:
+                    return False
                 img.load()
                 if min(img.size) < MIN_IMAGE_SIDE_PX:
                     logger.warning(
                         "Rejected tiny image %s for product %s from %s",
-                        img.size, product.id, product.image_url[:100])
+                        img.size, product.id, image_url[:100])
                     return False
             except Exception:
                 logger.warning("Rejected non-image payload for product %s from %s",
-                               product.id, product.image_url[:100])
+                               product.id, image_url[:100])
                 return False
-            ctype = response.headers.get('Content-Type', '')
-            if ctype and not ctype.startswith('image/'):
-                return False
-            match = re.search(r'\.([a-z0-9]{3,4})(?:[?#]|$)',
-                              product.image_url, re.IGNORECASE)
-            ext = (match.group(1).lower() if match else 'jpg')
-            if ext not in ALLOWED_IMAGE_EXTS:
-                ext = 'jpg'
+            ext = ALLOWED_IMAGE_FORMATS[image_format]
             # GTIN-less products get a random stable name: numeric product IDs
             # change across databases, so id-based filenames orphan easily.
             base = product.code_gtin or f"noid-{uuid.uuid4().hex[:12]}"
@@ -287,6 +378,7 @@ class ProductEnrichmentService:
     @staticmethod
     def _set_image(product, url, source):
         """Assign image_url honoring source confidence. Returns True if set."""
+        url = ProductEnrichmentService._safe_image_url(url)
         if not url or product.image_url == url:
             return False
         if not ProductEnrichmentService._can_update(product, 'image_url', source):
@@ -371,6 +463,8 @@ class ProductEnrichmentService:
     # ------------------------------------------------------------------
     @staticmethod
     def _apply_openfacts_product(product, p, source):
+        if not isinstance(p, dict):
+            return False
         changed = False
         name = (p.get('product_name_pt') or p.get('product_name')
                 or p.get('generic_name'))
@@ -393,8 +487,9 @@ class ProductEnrichmentService:
             else:
                 product.metadata['source_nova_group'] = source
                 changed = True
-        if p.get('nutriments') and not product.metadata.get('nutrition'):
-            product.metadata['nutrition'] = p.get('nutriments', {})
+        nutrition = ProductEnrichmentService._clean_nutrition(p.get('nutriments'))
+        if nutrition and not product.metadata.get('nutrition'):
+            product.metadata['nutrition'] = nutrition
             changed = True
         for api_field, meta_field in (('nutriscore_grade', 'nutriscore'),
                                       ('ecoscore_grade', 'ecoscore')):
@@ -414,12 +509,13 @@ class ProductEnrichmentService:
             url, params={'fields': OPENFACTS_FIELDS}, source=kind)
         if payload is None:
             return False
-        if payload.get('status') != 1 or not payload.get('product'):
+        product_data = payload.get('product')
+        if payload.get('status') != 1 or not isinstance(product_data, dict):
             logger.info("%s: product %s not found for GTIN %s",
                         kind, product.id, product.code_gtin)
             return False
         return ProductEnrichmentService._apply_openfacts_product(
-            product, payload['product'], source)
+            product, product_data, source)
 
     @staticmethod
     def _fetch_off(product, source='off_gtin'):
@@ -459,7 +555,7 @@ class ProductEnrichmentService:
         if payload is None:
             return False
         results = payload.get('results', [])
-        if not results:
+        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
             logger.info("meli-catalog: no entry for GTIN %s", product.code_gtin)
             return False
         entry = results[0]
@@ -533,7 +629,7 @@ class ProductEnrichmentService:
             logger.info("meli-search: no results for %r", query[:60])
             return False
         # Prefer verified titles, breaking ties by units sold.
-        matches = [r for r in results
+        matches = [r for r in results if isinstance(r, dict)
                    if ProductEnrichmentService._titles_match(
                        r.get('title', ''), reference, threshold)]
         if not matches:
@@ -627,7 +723,12 @@ class ProductEnrichmentService:
             source='openfoodfacts-search', timeout=25)
         if payload is None:
             return False
-        for p in payload.get('products', []):
+        products = payload.get('products', [])
+        if not isinstance(products, list):
+            return False
+        for p in products:
+            if not isinstance(p, dict):
+                continue
             nova = p.get('nova_group')
             if nova and ProductEnrichmentService._can_update(
                     product, 'nova_group', source):
@@ -636,7 +737,8 @@ class ProductEnrichmentService:
                 except (TypeError, ValueError):
                     continue
                 product.metadata['source_nova_group'] = source
-                product.metadata['nutrition'] = p.get('nutriments', {})
+                product.metadata['nutrition'] = ProductEnrichmentService._clean_nutrition(
+                    p.get('nutriments'))
                 ecoscore = p.get('ecoscore_grade')
                 if ecoscore:
                     product.metadata['ecoscore'] = str(ecoscore).lower()

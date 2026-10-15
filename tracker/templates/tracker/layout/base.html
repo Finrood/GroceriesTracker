@@ -10,13 +10,21 @@
     <link rel="stylesheet" href="{% static 'tracker/css/style.css' %}">
     <link rel="manifest" href="{% static 'tracker/manifest.json' %}">
     <meta name="theme-color" content="#10b981">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <script nonce="{{ csp_nonce }}">
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, char => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[char]);
+        }
+    </script>
 </head>
 <body class="">
     <div id="toast-container"></div>
-    <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
     <header class="mobile-header">
-        <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+        <button class="menu-toggle" type="button">☰</button>
         <a href="{% url 'index' %}" class="sidebar-brand" style="margin-bottom: 0; padding: 0; font-size: 1.25rem;">
             <span>🛒</span> <span>Tracker.</span>
         </a>
@@ -75,7 +83,7 @@
                             <input type="hidden" name="{{ key }}" value="{{ value }}">
                         {% endif %}
                     {% endfor %}
-                    <select name="user_ids" multiple style="width: 100%; background: #334155; color: white; border: 1px solid #475569; border-radius: 6px; padding: 5px; font-size: 0.8rem; min-height: 100px;" onchange="this.form.submit()">
+                    <select name="user_ids" multiple style="width: 100%; background: #334155; color: white; border: 1px solid #475569; border-radius: 6px; padding: 5px; font-size: 0.8rem; min-height: 100px;">
                         <option value="" {% if not selected_user_ids %}selected{% endif %}>--- All Users ---</option>
                         {% for u in all_users %}
                             <option value="{{ u.id }}" {% if u.id in selected_user_ids %}selected{% endif %}>{{ u.username }}</option>
@@ -116,7 +124,7 @@
         </div>
     </main>
     
-    <script>
+    <script nonce="{{ csp_nonce }}">
         // 1. Sidebar & Overlay Toggle
         function toggleSidebar() {
             const sidebar = document.getElementById('sidebar');
@@ -134,10 +142,14 @@
             }
         }
 
-        // Close sidebar on link click (useful for mobile SPAs or slow loads)
+        document.querySelector('.menu-toggle').addEventListener('click', toggleSidebar);
+        document.getElementById('sidebar-overlay').addEventListener('click', toggleSidebar);
+
+        // Close an open sidebar after navigation on mobile.
         document.querySelectorAll('.nav-item a').forEach(link => {
             link.addEventListener('click', () => {
-                if (window.innerWidth <= 1024) {
+                const sidebar = document.getElementById('sidebar');
+                if (window.innerWidth <= 1024 && sidebar.classList.contains('active')) {
                     toggleSidebar();
                 }
             });
@@ -166,9 +178,14 @@
         function showToast(message, type = 'success') {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            toast.innerHTML = `<span>${type === 'success' ? '✅' : '⚠️'}</span><span>${message}</span>`;
-            toast.onclick = () => toast.remove();
+            const safeType = type === 'error' || type === 'warning' ? 'error' : 'success';
+            const icon = document.createElement('span');
+            const text = document.createElement('span');
+            toast.className = `toast ${safeType}`;
+            icon.textContent = safeType === 'success' ? '✅' : '⚠️';
+            text.textContent = message;
+            toast.append(icon, text);
+            toast.addEventListener('click', () => toast.remove());
             container.appendChild(toast);
             setTimeout(() => {
                 toast.style.opacity = '0';
@@ -184,9 +201,24 @@
             {% endfor %}
         {% endif %}
 
+        // Keep admin filters functional without inline event attributes.
+        const userFilter = document.querySelector('#adminUserFilter select');
+        if (userFilter) userFilter.addEventListener('change', () => userFilter.form.submit());
+        document.addEventListener('change', event => {
+            if (event.target.matches('[data-auto-submit]')) event.target.form?.requestSubmit();
+        });
+
+        // Confirm potentially destructive operations and avoid stale loading UI.
+        document.querySelectorAll('form[data-confirm]').forEach(form => {
+            form.addEventListener('submit', event => {
+                if (!window.confirm(form.dataset.confirm)) event.preventDefault();
+            });
+        });
+
         // 4. Global Loading State Handler
         document.querySelectorAll('form').forEach(form => {
-            form.addEventListener('submit', function() {
+            form.addEventListener('submit', function(event) {
+                if (event.defaultPrevented) return;
                 const btn = this.querySelector('button[type="submit"]');
                 if (btn && !btn.classList.contains('no-loading')) {
                     btn.classList.add('btn-loading');
@@ -194,11 +226,22 @@
             });
         });
 
-        // 5. PWA Service Worker Registration
+        // Remove the legacy service worker. It precached an authenticated
+        // page and had a static-file scope that did not support offline use.
         if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('{% static "tracker/sw.js" %}');
+            navigator.serviceWorker.getRegistrations().then(registrations => {
+                registrations.forEach(registration => {
+                    const worker = registration.active || registration.waiting || registration.installing;
+                    if (worker && new URL(worker.scriptURL).pathname.startsWith('/static/tracker/sw')) {
+                        registration.unregister();
+                    }
+                });
             });
+        }
+        if ('caches' in window) {
+            caches.keys().then(keys => Promise.all(
+                keys.filter(key => key === 'tracker-v1').map(key => caches.delete(key))
+            ));
         }
     </script>
 </body>

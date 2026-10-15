@@ -20,12 +20,12 @@ Beyond simple expense tracking, it provides deep financial intelligence, includi
 
 ## 🏗️ Technical Architecture
 
-*   **Backend:** Python 3.14+ / Django 6.0+
+*   **Backend:** Python 3.14+ / Django 6.1+
 *   **Database:** SQLite (`db.sqlite3`, tracked in git for portability). PostgreSQL is not wired up — see `.env.example`: setting `DATABASE_URL` alone does nothing until `settings.py` is updated.
 *   **Task Queue:** `Django-Q2` for asynchronous product enrichment and scraping.
 *   **Data Science:** `RapidFuzz` for semantic product matching and `Hypothesis` for property-based testing.
 *   **Visualization:** **ECharts** for advanced interactive charts (Candlesticks, Heatmaps, Radar Charts).
-*   **Security:** Scraper domain whitelisting (SSRF protection) and normalized product identification (GTIN -> Internal Store Code -> Fuzzy Name).
+*   **Security:** Redirect-aware scraper allowlisting and response-size limits, user-scoped price analytics, enforced nonce-based CSP, and normalized product identification (GTIN -> Internal Store Code -> Fuzzy Name).
 
 ---
 
@@ -70,16 +70,19 @@ The fastest way to get everything running (Web + Worker) is via Docker Compose:
 ```bash
 docker compose up --build
 ```
-*   **Web:** Accessible at `http://localhost:8000`
+*   **Web:** Accessible on the host interface selected by `WEB_BIND_ADDRESS` (the example `.env` selects `127.0.0.1`).
 *   **Worker:** Automatically starts and handles background product enrichment and data processing.
 *   **Data:** `db.sqlite3` + `media/` come from the clone via the `.:/app` bind mount, so the stack starts with full history and images.
+*   **Permissions:** Set `APP_UID` and `APP_GID` in `.env` to the checkout owner's IDs so the non-root containers can write the tracked database and runtime files.
 
 ### Production Notes (Cloudflare Tunnel / reverse proxy)
 The stack ships production-ready defaults for running behind a TLS-terminating proxy:
 *   **Gunicorn + WhiteNoise** serve the app and hashed static files (no nginx needed).
 *   **Media files** are served by Django itself (`django.views.static.serve`), because the enrichment worker writes new product images while the app is running.
-*   `SECURE_PROXY_SSL_HEADER` trusts the proxy's `X-Forwarded-Proto`; cookies, HSTS, and `SECURE_SSL_REDIRECT` are all env-tunable (see `.env.example`).
-*   SQLite runs in **WAL mode** with a 60s busy timeout; `db.sqlite3`, `media/` and `staticfiles/` are bind-mounted volumes (see `docker-compose.yml`: `.:/app`).
+*   `SECURE_PROXY_SSL_HEADER` trusts the proxy's `X-Forwarded-Proto`; forwarded host headers are ignored. The tracked Compose default binds to `192.168.1.50`, matching this deployment's Tunnel origin. For a same-host loopback Tunnel, set `WEB_BIND_ADDRESS=127.0.0.1` and target `http://127.0.0.1:8000`.
+*   Cookies, HSTS, HTTPS redirect, and strict script CSP are enabled in production. Set a private random `SECRET_KEY` of at least 50 characters; production startup refuses the example placeholder.
+*   SQLite runs in **WAL mode** with a 60s busy timeout; `db.sqlite3`, `media/` and `staticfiles/` are bind-mounted volumes (see `docker-compose.yml`: `.:/app`). Web and worker run under the checkout owner's non-root UID/GID.
+*   The deploy startup command installs the daily queue-maintenance schedule, and Compose reports separate web and worker health checks.
 *   `.env` is never baked into the image (excluded via `.dockerignore`). `db.sqlite3` and `media/products/*` are likewise excluded from the image build to keep it slim — at runtime the containers use the git-tracked copies from the host via the bind mount, not image layers.
 
 ### Data integrity invariants
@@ -112,13 +115,13 @@ If the deployment directory is a git clone of this repo (e.g.
 the working tree is clean:
 ```bash
 cd /opt/appdata/groceries
-./deploy.sh        # = git pull --ff-only && docker compose build && up -d + health wait
+./deploy.sh        # stops writers, fast-forwards, rebuilds, starts, and waits for health
 ```
 Or manually:
 ```bash
+docker compose stop --timeout 30 web worker
 git pull --ff-only
 docker compose build && docker compose up -d
-docker compose run --rm --no-deps web python manage.py test   # optional sanity check
 ```
 Because `db.sqlite3` and `media/` are tracked, a `pull` **can** conflict or
 refuse to run when the local machine has its own data changes:
@@ -128,9 +131,7 @@ refuse to run when the local machine has its own data changes:
     changes would be overwritten”: commit the local DB first, then
     `git pull --rebase` (binary files cannot auto-merge — keep one side with
     `git checkout --ours/--theirs -- db.sqlite3`, then commit the result).
-*   Never run `deploy.sh` with uncommitted receipt/scrape changes — stop the
-    stack or wait for the worker to finish writing (`db.sqlite3-wal` should be
-    gone), commit, push, then deploy.
+*   Never pull while the web or worker is running: the tracked SQLite file is part of the bind-mounted checkout. `deploy.sh` stops both writers before the pull. It restores the previous release only when no database, media, or migration changes need preservation; otherwise it leaves the stack stopped and preserves the checkout for recovery.
 Still git-ignored and safe across pulls/builds: `.env`, `staticfiles/`,
 `django_cache/`, `*.log`, SQLite sidecars (`db.sqlite3-shm/-wal`).
 

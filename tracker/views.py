@@ -1,11 +1,12 @@
 from django.shortcuts import render, redirect, get_object_or_404
+from django.http import Http404
 from django.views.decorators.http import require_POST
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db import transaction, models
 from django.http import JsonResponse
 from .scraper import NFCeScraper
-from .models import Store, Product, Category, Receipt, ReceiptItem, ScrapeLog
+from .models import Store, Product, Category, Receipt, ReceiptItem, ScrapeLog, normalize_text
 from .services import ReceiptService, AnalyticsService, SmartCartService
 from .services import bump_dashboard_cache, dashboard_cache_version
 from .decorators import receipt_owner_required
@@ -56,6 +57,37 @@ def _get_user_filter(request):
         # If admin and no users selected, show ALL (return None)
         return None
     return [request.user.id]
+
+
+def _get_int_object_or_404(model, raw_pk):
+    try:
+        pk = int(raw_pk)
+    except (TypeError, ValueError):
+        raise Http404
+    if pk < 1:
+        raise Http404
+    return get_object_or_404(model, pk=pk)
+
+
+def _products_visible_to(user):
+    """Limit normal accounts to products present in their own receipts."""
+    products = Product.objects.all()
+    if not user.is_staff:
+        products = products.filter(receiptitems__receipt__user=user)
+    return products.distinct()
+
+
+def _would_create_parent_cycle(child, parent):
+    """Return True when assigning parent would make the product tree cyclic."""
+    seen = set()
+    current = parent
+    while current is not None and current.pk not in seen:
+        if current.pk == child.pk:
+            return True
+        seen.add(current.pk)
+        current = current.parent
+    # Refuse to extend a pre-existing corrupt cycle as well.
+    return current is not None
 
 from django.core.serializers.json import DjangoJSONEncoder
 
@@ -221,7 +253,17 @@ def shopping_optimizer(request):
 
 @login_required
 def category_list(request):
-    categories = Category.objects.prefetch_related('products').annotate(product_count=Count('products')).order_by('name')
+    visible_products = _products_visible_to(request.user).select_related('category')
+    product_count = Count('products', distinct=True)
+    if not request.user.is_staff:
+        product_count = Count(
+            'products',
+            filter=Q(products__receiptitems__receipt__user=request.user),
+            distinct=True,
+        )
+    categories = Category.objects.prefetch_related(
+        models.Prefetch('products', queryset=visible_products)
+    ).annotate(product_count=product_count).order_by('name')
     all_categories = Category.objects.all().order_by('name')
     return render(request, 'tracker/category_list.html', {
         'categories': categories,
@@ -229,27 +271,41 @@ def category_list(request):
     })
 
 @login_required
+@staff_member_required
 @require_POST
 def category_create(request):
-    name = request.POST.get('name')
-    if name:
+    name = normalize_text(request.POST.get('name', ''))
+    if name and len(name) <= 100:
         Category.objects.get_or_create(name=name)
         messages.success(request, f"Category '{name}' created.")
+    elif len(name or '') > 100:
+        messages.error(request, "Category names must be 100 characters or fewer.")
+    else:
+        messages.error(request, "Enter a category name.")
     return redirect('category_list')
 
 @login_required
+@staff_member_required
 @require_POST
 def category_update(request):
     cat_id = request.POST.get('id')
-    new_name = request.POST.get('name')
-    category = get_object_or_404(Category, id=cat_id)
-    if new_name:
+    new_name = normalize_text(request.POST.get('name', ''))
+    category = _get_int_object_or_404(Category, cat_id)
+    if new_name and len(new_name) <= 100:
+        if Category.objects.exclude(pk=category.pk).filter(name=new_name).exists():
+            messages.error(request, "That category already exists.")
+            return redirect('category_list')
         category.name = new_name
         category.save()
         messages.success(request, "Category updated.")
+    elif len(new_name or '') > 100:
+        messages.error(request, "Category names must be 100 characters or fewer.")
+    else:
+        messages.error(request, "Enter a category name.")
     return redirect('category_list')
 
 @login_required
+@staff_member_required
 @require_POST
 def category_delete(request, category_id):
     category = get_object_or_404(Category, id=category_id)
@@ -261,17 +317,19 @@ def category_delete(request, category_id):
     return redirect('category_list')
 
 @login_required
+@staff_member_required
 @require_POST
 def update_product_category(request):
     product_id = request.POST.get('product_id')
     category_id = request.POST.get('category_id')
-    product = get_object_or_404(Product, id=product_id)
-    category = get_object_or_404(Category, id=category_id)
+    product = _get_int_object_or_404(_products_visible_to(request.user), product_id)
+    category = _get_int_object_or_404(Category, category_id)
     product.category = category
     product.save()
     return redirect(request.META.get('HTTP_REFERER', 'dashboard'))
 
 @login_required
+@staff_member_required
 @require_POST
 def update_product_details(request):
     product_id = request.POST.get('product_id')
@@ -279,16 +337,32 @@ def update_product_details(request):
     new_brand = request.POST.get('brand')
     category_id = request.POST.get('category_id')
     
-    product = get_object_or_404(Product, id=product_id)
+    product = _get_int_object_or_404(_products_visible_to(request.user), product_id)
     
-    if new_name: product.display_name = new_name
-    if new_brand is not None: product.brand = new_brand
+    if new_name:
+        new_name = new_name.strip()
+        if len(new_name) > 255:
+            messages.error(request, "Display names must be 255 characters or fewer.")
+            return redirect(request.META.get('HTTP_REFERER', 'dashboard'))
+        product.display_name = new_name
+    if new_brand is not None:
+        new_brand = new_brand.strip()
+        if len(new_brand) > 100:
+            messages.error(request, "Brand names must be 100 characters or fewer.")
+            return redirect(request.META.get('HTTP_REFERER', 'dashboard'))
+        product.brand = new_brand
     if category_id:
-        product.category = get_object_or_404(Category, id=category_id)
+        product.category = _get_int_object_or_404(Category, category_id)
     
     parent_id = request.POST.get('parent_id')
     if parent_id:
-        product.parent = get_object_or_404(Product, id=parent_id)
+        parent = _get_int_object_or_404(_products_visible_to(request.user), parent_id)
+        if _would_create_parent_cycle(product, parent):
+            messages.error(request, "This parent would create a product variant cycle.")
+            return redirect(request.META.get('HTTP_REFERER', 'dashboard'))
+        product.parent = parent
+    else:
+        product.parent = None
 
     product.is_manually_edited = True
     product.save()
@@ -296,12 +370,17 @@ def update_product_details(request):
     return redirect(request.META.get('HTTP_REFERER', 'dashboard'))
 
 @login_required
+@staff_member_required
 @require_POST
 def link_product_variant(request):
     child_id = request.POST.get('child_id')
     parent_id = request.POST.get('parent_id')
-    child = get_object_or_404(Product, id=child_id)
-    parent = get_object_or_404(Product, id=parent_id)
+    child = _get_int_object_or_404(_products_visible_to(request.user), child_id)
+    parent = _get_int_object_or_404(_products_visible_to(request.user), parent_id)
+
+    if _would_create_parent_cycle(child, parent):
+        messages.error(request, "This parent would create a product variant cycle.")
+        return redirect('product_history', product_id=child.id)
     
     child.parent = parent
     child.save()
@@ -542,7 +621,7 @@ def inflation_analysis(request):
 @login_required
 def product_history(request, product_id):
     user_ids = _get_user_filter(request)
-    product = get_object_or_404(Product, id=product_id)
+    product = get_object_or_404(_products_visible_to(request.user), id=product_id)
     history = ReceiptItem.objects.filter(product=product)
     if user_ids: history = history.filter(receipt__user_id__in=user_ids)
     history = history.select_related('receipt', 'receipt__store').order_by('receipt__issue_date')
@@ -560,7 +639,8 @@ def product_history(request, product_id):
     # ECharts Candlestick Data
     candlestick_data = AnalyticsService.get_product_candlesticks(request.user, product.id)
     all_categories = Category.objects.all().order_by('name')
-    all_products = Product.objects.exclude(id=product.id).order_by('display_name', 'name')
+    all_products = _products_visible_to(request.user).exclude(
+        id=product.id).order_by('display_name', 'name')
 
     # Canonical siblings: same purchasable item under other stores' codes.
     canonical_siblings = []
@@ -577,7 +657,7 @@ def product_history(request, product_id):
         'product': product, 'history': history,
         'chart_labels': json.dumps(chart_labels), 'chart_data': json.dumps(chart_data),
         'store_ranking': store_ranking,
-        'candlestick_data': json.dumps(candlestick_data),
+        'candlestick_data': candlestick_data,
         'canonical_siblings': canonical_siblings,
         'all_categories': all_categories,
         'all_products': all_products
@@ -635,16 +715,22 @@ def confirm_refresh(request):
     if not url:
         messages.error(request, "Missing receipt URL for refresh.")
         return redirect('index')
-    scraper = NFCeScraper()
-    new_data = scraper.scrape_url(url)
+    try:
+        new_data = NFCeScraper().scrape_url(url)
+    except Exception as exc:
+        logger.warning("Receipt refresh scrape failed: %s", exc, exc_info=True)
+        messages.error(request, "Could not refresh that receipt. Check that the receipt page is available and try again.")
+        return redirect('index')
     access_key = new_data['receipt']['access_key']
-    # Ownership check: the receipt is located by the scraped access key, not a
-    # URL parameter, so receipt_owner_required does not apply here. Without
-    # this, refreshing another user's NFCe URL would delete THEIR receipt.
     with transaction.atomic():
-        existing = Receipt.objects.filter(access_key=access_key).select_related('user').first()
-        if existing and existing.user != request.user and not request.user.is_staff:
-            raise PermissionDenied("You do not have permission to refresh this receipt.")
+        # A receipt key can be shared across user accounts. Replace only this
+        # user's copy; never delete another user's row during a refresh.
+        existing = Receipt.objects.filter(
+            access_key=access_key, user=request.user
+        ).first()
+        if (existing is None and not request.user.is_staff and
+                Receipt.objects.filter(access_key=access_key).exclude(user=request.user).exists()):
+            raise PermissionDenied("You do not have permission to refresh another user's receipt.")
         if existing:
             existing.delete()
         receipt = ReceiptService.save_scraped_data(new_data, url, request.user)
@@ -673,11 +759,13 @@ def _generate_receipt_diff(existing, new_data):
 @login_required
 def product_search_api(request):
     query = request.GET.get('q', '')
-    if len(query) < 2:
+    if len(query) < 2 or len(query) > 80:
         return JsonResponse([], safe=False)
     
     products = Product.objects.filter(
-        Q(name__icontains=query) | Q(display_name__icontains=query)
+        Q(name__icontains=query) | Q(display_name__icontains=query),
+        Q(price_history__user=request.user) |
+        Q(price_history__user__isnull=True, price_history__receipt__user=request.user),
     ).values('id', 'name', 'display_name').distinct()[:10]
     
     results = []
@@ -699,9 +787,12 @@ def smart_cart(request):
     context = {}
     if request.method == 'POST':
         shopping_list = request.POST.get('shopping_list', '')
-        optimization_result = SmartCartService.optimize_cart(request.user, shopping_list)
-        context['result'] = optimization_result
         context['original_list'] = shopping_list
+        items = [line.strip() for line in shopping_list.splitlines() if line.strip()]
+        if len(shopping_list) > 10_000 or len(items) > 100:
+            messages.error(request, "Shopping lists are limited to 100 items and 10,000 characters.")
+        else:
+            context['result'] = SmartCartService.optimize_cart(request.user, shopping_list)
     return render(request, 'tracker/smart_cart.html', context)
 
 @login_required

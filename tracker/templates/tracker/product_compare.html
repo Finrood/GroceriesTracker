@@ -96,7 +96,7 @@
 </div>
 {% endif %}
 
-<script>
+<script nonce="{{ csp_nonce }}">
     document.getElementById('tableSearch').addEventListener('input', function() {
         const query = this.value.toLowerCase().trim();
         const rows = document.querySelectorAll('#productTableBody tr');
